@@ -86,4 +86,53 @@ describe("CacheFinanceUtils", () => {
         expect(CacheFinanceUtils.removeEmptyRecordsAtEndOfTable("not-an-array")).toBe("not-an-array");
         expect(CacheFinanceUtils.convertRowsToSingleArray("not-an-array")).toBe("not-an-array");
     });
+
+    it("builds historical queries from GOOGLEFINANCE-style parameters", () => {
+        const start = new Date("2024-01-01T00:00:00.000Z");
+        const end = new Date("2024-01-31T00:00:00.000Z");
+
+        const query = CacheFinanceUtils.buildHistoricalQuery(start, end, "WEEKLY");
+        expect(query?.interval).toBe("WEEKLY");
+        expect(CacheFinanceUtils.formatDateForCacheKey(query?.startDate)).toBe("2024-01-01");
+        expect(CacheFinanceUtils.formatDateForCacheKey(query?.endDate)).toBe("2024-01-31");
+    });
+
+    it("resolves num_days into an end date", () => {
+        const start = new Date("2024-01-01T00:00:00.000Z");
+        const query = CacheFinanceUtils.buildHistoricalQuery(start, 14, "DAILY");
+
+        expect(CacheFinanceUtils.formatDateForCacheKey(query?.endDate)).toBe("2024-01-15");
+    });
+
+    it("normalizes interval aliases", () => {
+        expect(CacheFinanceUtils.normalizeHistoricalInterval("1")).toBe("DAILY");
+        expect(CacheFinanceUtils.normalizeHistoricalInterval("weekly")).toBe("WEEKLY");
+        expect(CacheFinanceUtils.normalizeHistoricalInterval("")).toBe("DAILY");
+    });
+
+    it("builds historical cache keys", () => {
+        const query = CacheFinanceUtils.buildHistoricalQuery(
+            new Date("2024-01-01T00:00:00.000Z"),
+            new Date("2024-01-31T00:00:00.000Z"),
+            "DAILY"
+        );
+
+        expect(CacheFinanceUtils.makeHistoricalCacheKey("nasdaq:aapl", "close", query))
+            .toBe("HIST|CLOSE|NASDAQ:AAPL|2024-01-01|2024-01-31|DAILY");
+    });
+
+    it("validates and revives historical series values", () => {
+        const series = [
+            [new Date("2024-01-01T00:00:00.000Z"), 100],
+            [new Date("2024-01-02T00:00:00.000Z"), 101]
+        ];
+
+        expect(CacheFinanceUtils.isValidGoogleHistoricalValue(series)).toBe(true);
+        expect(CacheFinanceUtils.isValidGoogleHistoricalValue("#N/A")).toBe(false);
+
+        const serialized = CacheFinanceUtils.serializeHistoricalSeries(series);
+        const revived = CacheFinanceUtils.reviveHistoricalSeries(serialized);
+        expect(revived?.[0][1]).toBe(100);
+        expect(revived?.[0][0]).toBeInstanceOf(Date);
+    });
 });

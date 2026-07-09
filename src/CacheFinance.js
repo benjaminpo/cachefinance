@@ -4,7 +4,7 @@
 import { ScriptSettings } from "./ScriptSettings.js";
 import { ThirdPartyFinance, FinanceWebsiteSearch } from "./CacheFinance3rdParty.js";
 import { cacheFinanceTest } from "./CacheFinanceTest.js";
-import { StockAttributes, FinanceWebSites } from "./CacheFinanceWebSites.js";
+import { StockAttributes, FinanceWebSites, YahooApi } from "./CacheFinanceWebSites.js";
 import { CacheService, SpreadsheetApp } from "./GasMocks.js";
 import { CacheFinanceUtils } from "./CacheFinanceUtils.js";
 export { CACHEFINANCE, CACHEFINANCES, CacheFinance };
@@ -25,10 +25,13 @@ class Logger {
  *  "?" - List all backdoor abilities (SET, GET, SETBLOCKED, GETBLOCKED, LIST, REMOVE, CLEARCACHE, EXPIRECACHE, TEST)
  * e.g. =CACHEFINANCE("", "", "CLEARCACHE") or =CACHEFINANCE("TSE:CJP", "price", "GET")
  * @param {String} cmdOption - Option parameter used only with backdoor commands.
+ * @param {any} startDate - Optional. Start date for historical data (GOOGLEFINANCE-style).
+ * @param {any} endDateOrNumDays - Optional. End date or number of days from start_date.
+ * @param {String} interval - Optional. "DAILY" or "WEEKLY" (also 1 or 7).
  * @returns {any}
  * @customfunction
  */
-function CACHEFINANCE(symbol, attribute = "price", googleFinanceValue = "", cmdOption = "") {         // skipcq: JS-0128
+function CACHEFINANCE(symbol, attribute = "price", googleFinanceValue = "", cmdOption = "", startDate = "", endDateOrNumDays = "", interval = "") {         // skipcq: JS-0128
     Logger.log(`CACHEFINANCE:${symbol}=${attribute}. Google=${googleFinanceValue}`);
 
     //  Special inputs that perform something other than a finance request.
@@ -39,6 +42,16 @@ function CACHEFINANCE(symbol, attribute = "price", googleFinanceValue = "", cmdO
 
     if (symbol === '' || attribute === '') {
         return '';
+    }
+
+    const historicalQuery = CacheFinanceUtils.buildHistoricalQuery(startDate, endDateOrNumDays, interval);
+    if (historicalQuery !== null) {
+        return CacheFinance.getHistoricalFinanceData(
+            symbol.toUpperCase(),
+            attribute.toUpperCase().trim(),
+            googleFinanceValue,
+            historicalQuery
+        );
     }
 
     const data = CACHEFINANCES([[symbol]], attribute, [[googleFinanceValue]]);
@@ -144,6 +157,69 @@ class CacheFinance {
         }
 
         return CacheFinanceUtils.convertSingleToDoubleArray(googleFinanceValues);
+    }
+
+    /**
+     * Returns historical finance data compatible with GOOGLEFINANCE date-range output.
+     * @param {String} symbol
+     * @param {String} attribute
+     * @param {any} googleFinanceValue
+     * @param {{startDate: Date, endDate: Date, endDateOrNumDays: any, interval: String}} historicalQuery
+     * @param {Number} webSiteLookupCacheSeconds
+     * @returns {any[][]|String}
+     */
+    static getHistoricalFinanceData(symbol, attribute, googleFinanceValue, historicalQuery, webSiteLookupCacheSeconds = -1) {
+        const MAX_SHORT_CACHE_SECONDS = 21600;
+        const cacheKey = CacheFinanceUtils.makeHistoricalCacheKey(symbol, attribute, historicalQuery);
+
+        if (CacheFinanceUtils.isValidGoogleHistoricalValue(googleFinanceValue)) {
+            const serialized = CacheFinanceUtils.serializeHistoricalSeries(googleFinanceValue);
+            CacheFinanceUtils.putFinanceValuesIntoShortCache([cacheKey], [serialized], MAX_SHORT_CACHE_SECONDS);
+            CacheFinanceUtils.putHistoricalValuesIntoLongCache(cacheKey, serialized);
+            return googleFinanceValue;
+        }
+
+        const cachedSeries = CacheFinance.getHistoricalFinanceValueFromShortCache(cacheKey);
+        if (cachedSeries !== null) {
+            return cachedSeries;
+        }
+
+        const thirdPartySeries = YahooApi.getHistoricalInfo(symbol, attribute, historicalQuery);
+        if (CacheFinanceUtils.isValidGoogleHistoricalValue(thirdPartySeries)) {
+            const serialized = CacheFinanceUtils.serializeHistoricalSeries(thirdPartySeries);
+            const cacheSeconds = webSiteLookupCacheSeconds === -1
+                ? CacheFinanceUtils.MAX_HISTORICAL_CACHE_SECONDS
+                : webSiteLookupCacheSeconds;
+            CacheFinanceUtils.putFinanceValuesIntoShortCache([cacheKey], [serialized], cacheSeconds);
+            CacheFinanceUtils.putHistoricalValuesIntoLongCache(cacheKey, serialized);
+            return thirdPartySeries;
+        }
+
+        const longCachedSeries = CacheFinanceUtils.getHistoricalValuesFromLongCache(cacheKey);
+        if (longCachedSeries !== null) {
+            return longCachedSeries;
+        }
+
+        return "#N/A";
+    }
+
+    /**
+     * @param {String} cacheKey
+     * @returns {any[][]|null}
+     */
+    static getHistoricalFinanceValueFromShortCache(cacheKey) {
+        const shortCache = CacheService.getScriptCache();
+        const data = shortCache.get(cacheKey);
+
+        if (data !== null && data !== "#ERROR!") {
+            Logger.log(`Found historical data in Short CACHE: ${cacheKey}`);
+            const parsedData = JSON.parse(data);
+            if (CacheFinanceUtils.isValidGoogleHistoricalValue(parsedData)) {
+                return CacheFinanceUtils.reviveHistoricalSeries(parsedData);
+            }
+        }
+
+        return null;
     }
 
     /**

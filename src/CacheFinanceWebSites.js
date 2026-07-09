@@ -1,7 +1,7 @@
 /*  *** DEBUG START ***
 //  Remove comments for testing in NODE
 
-import { SiteThrottle, ThresholdPeriod } from "./CacheFinanceUtils.js";
+import { SiteThrottle, ThresholdPeriod, CacheFinanceUtils } from "./CacheFinanceUtils.js";
 export { FinanceWebSites, FinanceWebSite, StockAttributes };
 export { GlobeAndMail, YahooFinance, YahooApi, FinnHub, AlphaVantage, GoogleWebSiteFinance, TwelveData, CoinMarket };
 
@@ -556,6 +556,131 @@ class YahooApi {
         }
 
         return stockData;
+    }
+
+    /**
+     * @param {String} attribute
+     * @returns {Boolean}
+     */
+    static supportsHistoricalAttribute(attribute) {
+        const attr = attribute.toUpperCase();
+        return ["CLOSE", "PRICE", "OPEN", "PRICEOPEN", "HIGH", "LOW", "VOLUME"].includes(attr);
+    }
+
+    /**
+     * @param {String} attribute
+     * @returns {String|null}
+     */
+    static getHistoricalAttributeField(attribute) {
+        switch (attribute.toUpperCase()) {
+            case "CLOSE":
+            case "PRICE":
+                return "close";
+
+            case "OPEN":
+            case "PRICEOPEN":
+                return "open";
+
+            case "HIGH":
+                return "high";
+
+            case "LOW":
+                return "low";
+
+            case "VOLUME":
+                return "volume";
+
+            default:
+                return null;
+        }
+    }
+
+    /**
+     * @param {String} symbol
+     * @param {{startDate: Date, endDate: Date, interval: String}} historicalQuery
+     * @param {String} attribute
+     * @returns {String}
+     */
+    static getHistoricalURL(symbol, historicalQuery, attribute) {
+        if (FinanceWebSites.getTickerCountryCode(symbol) === "fx") {
+            return "";
+        }
+
+        if (!YahooApi.supportsHistoricalAttribute(attribute)) {
+            return "";
+        }
+
+        const period1 = CacheFinanceUtils.toUnixStartOfDay(historicalQuery.startDate);
+        const period2 = CacheFinanceUtils.toUnixStartOfDay(historicalQuery.endDate) + 86400;
+        const interval = historicalQuery.interval === "WEEKLY" ? "1wk" : "1d";
+
+        return `https://query1.finance.yahoo.com/v8/finance/chart/${YahooApi.getTicker(symbol)}?period1=${period1}&period2=${period2}&interval=${interval}`;
+    }
+
+    /**
+     * @param {String} symbol
+     * @param {String} attribute
+     * @param {{startDate: Date, endDate: Date, interval: String}} historicalQuery
+     * @returns {any[][]|null}
+     */
+    static getHistoricalInfo(symbol, attribute, historicalQuery) {
+        const URL = YahooApi.getHistoricalURL(symbol, historicalQuery, attribute);
+        if (URL === "") {
+            return null;
+        }
+
+        let html = null;
+        try {
+            html = UrlFetchApp.fetch(URL).getContentText();
+        }
+        catch {
+            return null;
+        }
+
+        Logger.log(`getHistoricalInfo: ${symbol}. URL = ${URL}`);
+
+        return YahooApi.parseHistoricalResponse(html, attribute);
+    }
+
+    /**
+     * @param {String} html
+     * @param {String} attribute
+     * @returns {any[][]|null}
+     */
+    static parseHistoricalResponse(html, attribute) {
+        const field = YahooApi.getHistoricalAttributeField(attribute);
+        if (field === null) {
+            return null;
+        }
+
+        try {
+            const data = JSON.parse(html);
+            const result = data?.chart?.result?.[0];
+            if (!result?.timestamp?.length) {
+                return null;
+            }
+
+            const values = result.indicators?.quote?.[0]?.[field];
+            if (!values) {
+                return null;
+            }
+
+            const series = [];
+            for (let i = 0; i < result.timestamp.length; i++) {
+                const val = values[i];
+                if (val === null || val === undefined || Number.isNaN(val)) {
+                    continue;
+                }
+
+                series.push([new Date(result.timestamp[i] * 1000), val]);
+            }
+
+            return series.length > 0 ? series : null;
+        }
+        catch {
+            Logger.log(`Failed to parse historical JSON for ${attribute}`);
+            return null;
+        }
     }
 
     /**

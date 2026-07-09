@@ -13,6 +13,7 @@ import {
     StockAttributes
 } from "../src/CacheFinanceWebSites.js";
 import { PropertiesService } from "../src/GasMocks.js";
+import { CacheFinanceUtils } from "../src/CacheFinanceUtils.js";
 
 describe("FinanceWebSites.getTickerCountryCode", () => {
     it.each([
@@ -248,6 +249,39 @@ describe("YahooApi", () => {
         const data = YahooApi.parseResponse(json, "NASDAQ:VTC");
         expect(data.stockPrice).toBe(123.46);
         expect(data.stockName).toBe("Vanguard Tax-Exempt Bond");
+    });
+
+    it("builds historical chart API URLs", () => {
+        const query = CacheFinanceUtils.buildHistoricalQuery(
+            new Date("2024-01-01T00:00:00.000Z"),
+            new Date("2024-01-31T00:00:00.000Z"),
+            "WEEKLY"
+        );
+
+        expect(YahooApi.getHistoricalURL("NASDAQ:VTC", query, "CLOSE"))
+            .toBe("https://query1.finance.yahoo.com/v8/finance/chart/VTC?period1=1704067200&period2=1706745600&interval=1wk");
+        expect(YahooApi.getHistoricalURL("CURRENCY:USDEUR", query, "CLOSE")).toBe("");
+    });
+
+    it("parses historical chart JSON responses", () => {
+        const json = JSON.stringify({
+            chart: {
+                result: [{
+                    timestamp: [1704067200, 1704153600],
+                    indicators: {
+                        quote: [{
+                            close: [100.5, 101.25]
+                        }]
+                    }
+                }]
+            }
+        });
+
+        const series = YahooApi.parseHistoricalResponse(json, "CLOSE");
+        expect(series).toHaveLength(2);
+        expect(series?.[0][1]).toBe(100.5);
+        expect(series?.[1][1]).toBe(101.25);
+        expect(series?.[0][0]).toBeInstanceOf(Date);
     });
 });
 

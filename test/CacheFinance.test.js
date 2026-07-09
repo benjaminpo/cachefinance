@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CACHEFINANCE, CACHEFINANCES, CacheFinance } from "../src/CacheFinance.js";
 import { ThirdPartyFinance } from "../src/CacheFinance3rdParty.js";
-import { StockAttributes } from "../src/CacheFinanceWebSites.js";
+import { StockAttributes, YahooApi } from "../src/CacheFinanceWebSites.js";
 import { CacheFinanceUtils } from "../src/CacheFinanceUtils.js";
 import { CacheService } from "../src/GasMocks.js";
 
@@ -168,6 +168,37 @@ describe("CacheFinance.getBulkFinanceData", () => {
 
         expect(result).toEqual([[33.3]]);
     });
+
+    it("caches and returns valid historical GOOGLEFINANCE series", () => {
+        const series = [
+            [new Date("2024-01-01T00:00:00.000Z"), 100],
+            [new Date("2024-01-02T00:00:00.000Z"), 101]
+        ];
+        const query = CacheFinanceUtils.buildHistoricalQuery(
+            new Date("2024-01-01T00:00:00.000Z"),
+            new Date("2024-01-02T00:00:00.000Z"),
+            "DAILY"
+        );
+
+        const result = CacheFinance.getHistoricalFinanceData("NASDAQ:AAPL", "CLOSE", series, query);
+        expect(result).toEqual(series);
+
+        const cached = CacheFinance.getHistoricalFinanceData("NASDAQ:AAPL", "CLOSE", "#N/A", query);
+        expect(cached).toEqual(series);
+    });
+
+    it("uses Yahoo historical data when cache and defaults are missing", () => {
+        const yahooSeries = [[new Date("2024-01-01T00:00:00.000Z"), 55.5]];
+        vi.spyOn(YahooApi, "getHistoricalInfo").mockReturnValue(yahooSeries);
+        const query = CacheFinanceUtils.buildHistoricalQuery(
+            new Date("2024-01-01T00:00:00.000Z"),
+            7,
+            "WEEKLY"
+        );
+
+        const result = CacheFinance.getHistoricalFinanceData("NASDAQ:AAPL", "CLOSE", "#N/A", query);
+        expect(result).toEqual(yahooSeries);
+    });
 });
 
 describe("CacheFinance backdoor commands", () => {
@@ -258,6 +289,45 @@ describe("CACHEFINANCE custom function", () => {
     it("returns an empty string for blank symbol or attribute", () => {
         expect(CACHEFINANCE("", "price")).toBe("");
         expect(CACHEFINANCE("TSE:ZTL", "")).toBe("");
+    });
+
+    it("returns historical data from a valid GOOGLEFINANCE series", () => {
+        const series = [
+            [new Date("2024-01-01T00:00:00.000Z"), 100],
+            [new Date("2024-01-02T00:00:00.000Z"), 101]
+        ];
+
+        const result = CACHEFINANCE(
+            "NASDAQ:AAPL",
+            "close",
+            series,
+            "",
+            new Date("2024-01-01T00:00:00.000Z"),
+            new Date("2024-01-02T00:00:00.000Z"),
+            "DAILY"
+        );
+
+        expect(result).toEqual(series);
+    });
+
+    it("falls back to Yahoo historical data when GOOGLEFINANCE returns #N/A", () => {
+        const yahooSeries = [
+            [new Date("2024-01-01T00:00:00.000Z"), 88.8],
+            [new Date("2024-01-02T00:00:00.000Z"), 89.1]
+        ];
+        vi.spyOn(YahooApi, "getHistoricalInfo").mockReturnValue(yahooSeries);
+
+        const result = CACHEFINANCE(
+            "NASDAQ:AAPL",
+            "close",
+            "#N/A",
+            "",
+            new Date("2024-01-01T00:00:00.000Z"),
+            new Date("2024-01-02T00:00:00.000Z"),
+            "DAILY"
+        );
+
+        expect(result).toEqual(yahooSeries);
     });
 });
 

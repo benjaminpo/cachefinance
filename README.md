@@ -20,6 +20,7 @@
 
 * **CACHEFINANCE** is a custom function to supplement GOOGLEFINANCE.
   * Use this for ONE symbol and ONE attribute lookup.
+  * Supports GOOGLEFINANCE-style **historical** queries (`start_date`, `end_date` / `num_days`, `interval`) since v1.2.0.
 * **CACHEFINANCES** is a custom function similar to **CACHEFINANCE** except it is used to process a range of symbols.
 * Valid **STOCK** data is always available even when GOOGLEFINANCE refuses to work.
 * **Warning!!!** When a stock/ETF switches to a new exchange and you do not update the exchange code, CACHEFINANCE will continue to report the LAST quote it was able to obtain for a very long period of time.  This of course leads to portfolio valuations to drift from actual as time goes by.  You therefore need to periodically manually inspect the CACHEFINANCE price versus a quote you would have with your broker.
@@ -99,7 +100,7 @@
 * **CAVEAT EMPTOR**.  Custom functions are also far from perfect.  If Google Sheets decides to throw up the dreaded 'Loading' error, you are almost back to where we started with an unreliable GOOGLEFINANCE() function.
      * However, in my testing it seems to happen more often when you are doing a large number of finance lookups. 
 * **SYNTAX**.
-    *  ```CACHEFINANCE(symbol, attribute, defaultValue)```
+    *  ```CACHEFINANCE(symbol, attribute, defaultValue, cmdOption, startDate, endDateOrNumDays, interval)```
     * **symbol** - stock symbol using regular GOOGLEFINANCE conventions.
     * **attribute** - three supported attributes doing 3'rd party website lookups:  
        * "price" 
@@ -115,7 +116,9 @@
       * 'yieldpct' does not work for STOCKS and ETF's in GOOGLEFINANCE, so don't supply the third parameter when using that attribute.
       * Example: (symbol that is not recognized by GOOGLEFINANCE)
         *  ```=CACHEFINANCE("TSE:ZTL", "price", GOOGLEFINANCE("TSE:ZTL", "price"))```
-  
+    * **cmdOption** - Used **only** with backdoor commands `SET` and `SETBLOCKED` to name a preferred or blocked data provider (e.g. `YAHOO`, `FINNHUB`). This is **not** a GOOGLEFINANCE option. Leave empty for normal lookups.
+      * ```=CACHEFINANCE("TSE:CJP", "PRICE", "SET", "YAHOO")```
+
     * **Special (Back Door) Commands**
       *  "TEST" -  special case.  Lists in a table results of a sanity test to third party finance sites.
          *  This will generate about twenty rows of output, so it is necessary to make sure that there is no cells with data (otherwise it fails to run).
@@ -133,6 +136,49 @@
       * "?" - special case.  Displays all supported special case commands.
       * "REMOVE" - special case.  Takes the preferred site and moves it to the blocked site.
         * ```=CACHEFINANCE("TSE:CJP", "PRICE", "REMOVE")```
+
+## Historical data (CACHEFINANCE)
+
+When `startDate` is provided, **CACHEFINANCE** runs in historical mode and returns a 2D table (date + value), matching [GOOGLEFINANCE historical syntax](https://support.google.com/docs/answer/3093281).
+
+* **startDate** - Start date for the historical range. Required to enable historical mode.
+* **endDateOrNumDays** - End date, **or** the number of days from `startDate` for which to return data. If omitted, only the single `startDate` day is returned.
+* **interval** - `"DAILY"` or `"WEEKLY"` (also `1` or `7`). Defaults to `"DAILY"`.
+
+Historical parameters are appended **after** `cmdOption`, so existing formulas and backdoor commands are unchanged. Leave `cmdOption` empty when you are not setting a provider:
+
+```text
+=CACHEFINANCE(
+  "NASDAQ:AAPL",
+  "close",
+  GOOGLEFINANCE("NASDAQ:AAPL","close",DATE(2024,1,1),DATE(2024,12,31),"DAILY"),
+  ,
+  DATE(2024,1,1),
+  DATE(2024,12,31),
+  "DAILY"
+)
+```
+
+Weekly closes over 14 days from a start date:
+
+```text
+=CACHEFINANCE("NYSE:GE", "close", "#N/A", , DATE(2023,12,31), 14, "WEEKLY")
+```
+
+**Behavior**
+
+1. If `defaultValue` is a valid historical series from `GOOGLEFINANCE()`, it is cached and returned.
+2. If `GOOGLEFINANCE()` fails (`#N/A`), the function checks the cache.
+3. If still missing, it fetches historical data from the Yahoo Chart API where supported.
+4. As a last resort, it returns the long-cache copy of the series.
+
+**Supported historical attributes** (third-party fallback): `close`, `price`, `open`, `priceopen`, `high`, `low`, `volume`.
+
+**Limitations**
+
+* Historical mode is supported in **CACHEFINANCE** only (not **CACHEFINANCES** bulk lookups yet).
+* Currency (`CURRENCY:`) historical lookups are not supported by the Yahoo fallback.
+* Large date ranges can be slow and may approach the 30-second custom-function limit.
 
 ## CACHEFINANCES
 * **WHY USE?**

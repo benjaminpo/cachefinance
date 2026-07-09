@@ -210,6 +210,259 @@ class CacheFinanceUtils {                       // skipcq: JS-0128
     static convertSingleToDoubleArray(singleArray) {
         return singleArray.map(item => [item]);
     }
+
+    /**
+     * Default short-cache lifetime for historical series (seconds).
+     * @returns {Number}
+     */
+    static get MAX_HISTORICAL_CACHE_SECONDS() {
+        return 86400;
+    }
+
+    /**
+     * Build a historical query object from GOOGLEFINANCE-style parameters.
+     * @param {any} startDate
+     * @param {any} endDateOrNumDays
+     * @param {any} interval
+     * @returns {{startDate: Date, endDate: Date, endDateOrNumDays: any, interval: String}|null}
+     */
+    static buildHistoricalQuery(startDate, endDateOrNumDays, interval) {
+        if (startDate === "" || startDate === null || startDate === undefined) {
+            return null;
+        }
+
+        const dateRange = CacheFinanceUtils.resolveHistoricalDateRange(startDate, endDateOrNumDays);
+        if (dateRange === null) {
+            return null;
+        }
+
+        return {
+            startDate: dateRange.start,
+            endDate: dateRange.end,
+            endDateOrNumDays,
+            interval: CacheFinanceUtils.normalizeHistoricalInterval(interval)
+        };
+    }
+
+    /**
+     * @param {any} interval
+     * @returns {String}
+     */
+    static normalizeHistoricalInterval(interval) {
+        if (interval === "" || interval === null || interval === undefined) {
+            return "DAILY";
+        }
+
+        const val = interval.toString().toUpperCase().trim();
+        if (val === "1" || val === "DAILY") {
+            return "DAILY";
+        }
+        if (val === "7" || val === "WEEKLY") {
+            return "WEEKLY";
+        }
+
+        return "DAILY";
+    }
+
+    /**
+     * @param {any} value
+     * @returns {Date|null}
+     */
+    static parseSheetDate(value) {
+        if (value instanceof Date && !Number.isNaN(value.getTime())) {
+            return new Date(value.getTime());
+        }
+
+        if (typeof value === "number" && Number.isFinite(value)) {
+            if (value > 1000000000000) {
+                const fromUnixMs = new Date(value);
+                return Number.isNaN(fromUnixMs.getTime()) ? null : fromUnixMs;
+            }
+
+            // Google Sheets serial date (days since 1899-12-30).
+            const fromSerial = new Date((value - 25569) * 86400 * 1000);
+            return Number.isNaN(fromSerial.getTime()) ? null : fromSerial;
+        }
+
+        if (typeof value === "string" && value.trim() !== "") {
+            const fromString = new Date(value);
+            return Number.isNaN(fromString.getTime()) ? null : fromString;
+        }
+
+        return null;
+    }
+
+    /**
+     * @param {any} startDate
+     * @param {any} endDateOrNumDays
+     * @returns {{start: Date, end: Date}|null}
+     */
+    static resolveHistoricalDateRange(startDate, endDateOrNumDays) {
+        const start = CacheFinanceUtils.parseSheetDate(startDate);
+        if (start === null) {
+            return null;
+        }
+
+        if (endDateOrNumDays === "" || endDateOrNumDays === null || endDateOrNumDays === undefined) {
+            return { start, end: new Date(start.getTime()) };
+        }
+
+        const numDays = CacheFinanceUtils.parseHistoricalNumDays(endDateOrNumDays);
+        if (numDays !== null) {
+            const end = new Date(start.getTime());
+            end.setUTCDate(end.getUTCDate() + numDays);
+            return { start, end };
+        }
+
+        const end = CacheFinanceUtils.parseSheetDate(endDateOrNumDays);
+        if (end === null) {
+            return null;
+        }
+
+        return { start, end };
+    }
+
+    /**
+     * @param {any} value
+     * @returns {Number|null}
+     */
+    static parseHistoricalNumDays(value) {
+        if (typeof value === "number" && Number.isFinite(value) && value > 0 && value < 10000) {
+            return Math.floor(value);
+        }
+
+        if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+            const num = Number.parseInt(value.trim(), 10);
+            return num > 0 ? num : null;
+        }
+
+        return null;
+    }
+
+    /**
+     * @param {Date} date
+     * @returns {Number}
+     */
+    static toUnixStartOfDay(date) {
+        const parsed = CacheFinanceUtils.parseSheetDate(date);
+        if (parsed === null) {
+            return 0;
+        }
+
+        return Math.floor(Date.UTC(
+            parsed.getUTCFullYear(),
+            parsed.getUTCMonth(),
+            parsed.getUTCDate()
+        ) / 1000);
+    }
+
+    /**
+     * @param {String} symbol
+     * @param {String} attribute
+     * @param {{startDate: Date, endDate: Date, endDateOrNumDays: any, interval: String}} historicalQuery
+     * @returns {String}
+     */
+    static makeHistoricalCacheKey(symbol, attribute, historicalQuery) {
+        const startKey = CacheFinanceUtils.formatDateForCacheKey(historicalQuery.startDate);
+        const endKey = CacheFinanceUtils.formatDateForCacheKey(historicalQuery.endDate);
+
+        return `HIST|${attribute.toUpperCase()}|${symbol.toUpperCase()}|${startKey}|${endKey}|${historicalQuery.interval}`;
+    }
+
+    /**
+     * @param {any} date
+     * @returns {String}
+     */
+    static formatDateForCacheKey(date) {
+        const parsed = CacheFinanceUtils.parseSheetDate(date);
+        if (parsed === null) {
+            return "";
+        }
+
+        return parsed.toISOString().slice(0, 10);
+    }
+
+    /**
+     * @param {any} value
+     * @returns {Boolean}
+     */
+    static isValidGoogleHistoricalValue(value) {
+        if (!Array.isArray(value) || value.length === 0 || typeof value === "string") {
+            return false;
+        }
+
+        for (const row of value) {
+            if (!Array.isArray(row) || row.length < 2) {
+                continue;
+            }
+
+            if (CacheFinanceUtils.isValidGoogleValue(row[1])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param {any[][]} series
+     * @returns {any[][]}
+     */
+    static serializeHistoricalSeries(series) {
+        return series.map((row) => {
+            if (!Array.isArray(row) || row.length < 2) {
+                return row;
+            }
+
+            const date = row[0] instanceof Date ? row[0].toISOString() : row[0];
+            return [date, row[1]];
+        });
+    }
+
+    /**
+     * @param {any} series
+     * @returns {any[][]|null}
+     */
+    static reviveHistoricalSeries(series) {
+        if (!Array.isArray(series)) {
+            return null;
+        }
+
+        return series.map((row) => {
+            if (!Array.isArray(row) || row.length < 2) {
+                return row;
+            }
+
+            const date = CacheFinanceUtils.parseSheetDate(row[0]);
+            return [date ?? row[0], row[1]];
+        });
+    }
+
+    /**
+     * @param {String} cacheKey
+     * @param {any[][]} serializedSeries
+     * @param {Number} daysToHold
+     */
+    static putHistoricalValuesIntoLongCache(cacheKey, serializedSeries, daysToHold = 7) {
+        if (!CacheFinanceUtils.isValidGoogleHistoricalValue(serializedSeries)) {
+            return;
+        }
+
+        ScriptSettings.putAllKeysWithData([cacheKey], [serializedSeries], daysToHold);
+    }
+
+    /**
+     * @param {String} cacheKey
+     * @returns {any[][]|null}
+     */
+    static getHistoricalValuesFromLongCache(cacheKey) {
+        const data = ScriptSettings.getAll([cacheKey]);
+        if (data[0] === null) {
+            return null;
+        }
+
+        return CacheFinanceUtils.reviveHistoricalSeries(data[0]);
+    }
 }
 
 /**
