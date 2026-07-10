@@ -288,6 +288,31 @@ describe("YahooApi", () => {
         expect(series?.[0][0]).toBeInstanceOf(Date);
     });
 
+    it("parses meta-only forex historical responses for single-day ranges", () => {
+        const startDate = new Date("2026-01-10T00:00:00.000Z");
+        const json = JSON.stringify({
+            chart: {
+                result: [{
+                    meta: {
+                        regularMarketPrice: 0.0951,
+                        chartPreviousClose: 0.0955,
+                        regularMarketTime: 1768089600
+                    },
+                    indicators: {
+                        quote: [{}],
+                        adjclose: [{}]
+                    }
+                }],
+                error: null
+            }
+        });
+
+        const series = YahooApi.parseHistoricalResponse(json, "PRICE", { startDate });
+        expect(series).toHaveLength(1);
+        expect(series?.[0][1]).toBe(0.0951);
+        expect(series?.[0][0]).toEqual(startDate);
+    });
+
     it("logs and returns null when Yahoo reports no historical data", () => {
         const json = JSON.stringify({
             chart: {

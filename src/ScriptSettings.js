@@ -83,12 +83,12 @@ class ScriptSettings {      //  skipcq: JS-0128
      * @param {any[]} newCacheData 
      * @param {Number} daysToHold
      */
-    static putAllKeysWithData(cacheKeys, newCacheData, daysToHold = 7) {
+    static putAllKeysWithData(cacheKeys, newCacheData, daysToHold = 7, fetchedAt = Date.now()) {
         const bulkData = {};
 
         for (let i = 0; i < cacheKeys.length; i++) {
             //  Create our object with an expiry time.
-            const objData = new PropertyData(newCacheData[i], daysToHold);
+            const objData = new PropertyData(newCacheData[i], daysToHold, fetchedAt);
 
             //  Our property needs to be a string
             bulkData[cacheKeys[i]] = JSON.stringify(objData);
@@ -107,6 +107,11 @@ class ScriptSettings {      //  skipcq: JS-0128
         const values = [];
 
         if (cacheKeys.length === 0) {
+            return values;
+        }
+
+        if (cacheKeys.length === 1) {
+            values.push(ScriptSettings.getOne(cacheKeys[0]));
             return values;
         }
         
@@ -132,6 +137,89 @@ class ScriptSettings {      //  skipcq: JS-0128
                 }
                 else {
                     values.push(PropertyData.getData(myPropertyData));
+                }
+            }
+        }
+
+        return values;
+    }
+
+    /**
+     * Reads one script property without loading the full property store.
+     * @param {String} cacheKey
+     * @returns {any|null}
+     */
+    static getOne(cacheKey) {
+        const settings = new ScriptSettings();
+        return settings.get(cacheKey);
+    }
+
+    /**
+     * @param {String} cacheKey
+     * @returns {{value: any, fetchedAt: Number|null}}
+     */
+    static getOneWithMetadata(cacheKey) {
+        const settings = new ScriptSettings();
+        const myData = settings.scriptProperties.getProperty(cacheKey);
+
+        if (myData === null) {
+            return { value: null, fetchedAt: null };
+        }
+
+        /** @type {PropertyData} */
+        const myPropertyData = JSON.parse(myData);
+
+        if (PropertyData.isExpired(myPropertyData)) {
+            settings.delete(cacheKey);
+            return { value: null, fetchedAt: null };
+        }
+
+        return {
+            value: PropertyData.getData(myPropertyData),
+            fetchedAt: PropertyData.getFetchedAt(myPropertyData)
+        };
+    }
+
+    /**
+     * Returns cached data and fetch timestamps for each key.
+     * @param {String[]} cacheKeys
+     * @returns {{value: any, fetchedAt: Number|null}[]}
+     */
+    static getAllWithMetadata(cacheKeys) {
+        const values = [];
+
+        if (cacheKeys.length === 0) {
+            return values;
+        }
+
+        if (cacheKeys.length === 1) {
+            values.push(ScriptSettings.getOneWithMetadata(cacheKeys[0]));
+            return values;
+        }
+
+        const allProperties = PropertiesService.getScriptProperties().getProperties();
+        ScriptSettings.expire(false, 1, allProperties);
+
+        for (const key of cacheKeys) {
+            const myData = allProperties[key];
+
+            if (myData === undefined) {
+                values.push({ value: null, fetchedAt: null });
+            }
+            else {
+                /** @type {PropertyData} */
+                const myPropertyData = JSON.parse(myData);
+
+                if (PropertyData.isExpired(myPropertyData)) {
+                    values.push({ value: null, fetchedAt: null });
+                    PropertiesService.getScriptProperties().deleteProperty(key);
+                    Logger.log(`Delete expired Script Property Key=${key}`);
+                }
+                else {
+                    values.push({
+                        value: PropertyData.getData(myPropertyData),
+                        fetchedAt: PropertyData.getFetchedAt(myPropertyData)
+                    });
                 }
             }
         }
@@ -201,13 +289,15 @@ class PropertyData {
      * @param {any} propertyData 
      * @param {Number} daysToHold 
      */
-    constructor(propertyData, daysToHold) {
+    constructor(propertyData, daysToHold, fetchedAt = Date.now()) {
         const someDate = new Date();
 
         /** @property {String} */
         this.myData = JSON.stringify(propertyData);
         /** @property {Date} */
         this.expiry = someDate.setMinutes(someDate.getMinutes() + daysToHold * 1440);
+        /** @property {Number} */
+        this.fetchedAt = fetchedAt;
     }
 
     /**
@@ -235,5 +325,13 @@ class PropertyData {
         const someDate = new Date();
         const expiryDate = new Date(obj.expiry);
         return (expiryDate.getTime() < someDate.getTime())
+    }
+
+    /**
+     * @param {PropertyData} obj
+     * @returns {Number|null}
+     */
+    static getFetchedAt(obj) {
+        return obj.fetchedAt ?? null;
     }
 }

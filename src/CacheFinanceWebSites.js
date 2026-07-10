@@ -687,15 +687,78 @@ class YahooApi {
 
         Logger.log(`getHistoricalInfo: ${symbol}. URL = ${URL}`);
 
-        return YahooApi.parseHistoricalResponse(html, attribute);
+        return YahooApi.parseHistoricalResponse(html, attribute, historicalQuery);
+    }
+
+    /**
+     * @param {Object} meta
+     * @param {String|null} field
+     * @returns {Number|null}
+     */
+    static getHistoricalValueFromMeta(meta, field) {
+        if (field === null || meta === undefined || meta === null) {
+            return null;
+        }
+
+        const valueByField = {
+            close: meta.regularMarketPrice ?? meta.chartPreviousClose,
+            open: meta.regularMarketPrice ?? meta.chartPreviousClose,
+            high: meta.regularMarketDayHigh,
+            low: meta.regularMarketDayLow,
+            volume: meta.regularMarketVolume
+        };
+
+        const rawValue = valueByField[field];
+        if (rawValue === null || rawValue === undefined) {
+            return null;
+        }
+
+        const parsedValue = Number.parseFloat(rawValue);
+        return Number.isNaN(parsedValue) ? null : parsedValue;
+    }
+
+    /**
+     * @param {Object} meta
+     * @param {{startDate?: Date}} historicalQuery
+     * @returns {Date}
+     */
+    static getHistoricalDateFromMeta(meta, historicalQuery) {
+        if (historicalQuery?.startDate instanceof Date && !Number.isNaN(historicalQuery.startDate.getTime())) {
+            return historicalQuery.startDate;
+        }
+
+        if (meta?.regularMarketTime) {
+            return new Date(meta.regularMarketTime * 1000);
+        }
+
+        return new Date();
+    }
+
+    /**
+     * Yahoo sometimes returns meta-only chart payloads for short forex ranges.
+     * @param {Object} result
+     * @param {String} attribute
+     * @param {{startDate?: Date, endDate?: Date}} historicalQuery
+     * @returns {any[][]|null}
+     */
+    static parseMetaHistoricalFallback(result, attribute, historicalQuery) {
+        const field = YahooApi.getHistoricalAttributeField(attribute);
+        const value = YahooApi.getHistoricalValueFromMeta(result?.meta, field);
+
+        if (value === null) {
+            return null;
+        }
+
+        return [[YahooApi.getHistoricalDateFromMeta(result.meta, historicalQuery), value]];
     }
 
     /**
      * @param {String} html
      * @param {String} attribute
+     * @param {{startDate?: Date, endDate?: Date}} historicalQuery
      * @returns {any[][]|null}
      */
-    static parseHistoricalResponse(html, attribute) {
+    static parseHistoricalResponse(html, attribute, historicalQuery = null) {
         const field = YahooApi.getHistoricalAttributeField(attribute);
         if (field === null) {
             return null;
@@ -706,6 +769,11 @@ class YahooApi {
             const result = data?.chart?.result?.[0];
 
             if (!result?.timestamp?.length) {
+                const fallbackSeries = YahooApi.parseMetaHistoricalFallback(result, attribute, historicalQuery);
+                if (fallbackSeries !== null) {
+                    return fallbackSeries;
+                }
+
                 Logger.log(`Yahoo historical: no data. error=${JSON.stringify(data?.chart?.error ?? null)}`);
                 return null;
             }

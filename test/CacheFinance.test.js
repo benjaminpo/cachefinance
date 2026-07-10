@@ -155,6 +155,49 @@ describe("CacheFinance.getBulkFinanceData", () => {
         expect(result).toEqual([[77.7]]);
     });
 
+    it("skips third-party lookups during recalculation when long cache is still fresh", () => {
+        const thirdPartySpy = vi.spyOn(ThirdPartyFinance, "getMissingStockAttributesFromThirdParty");
+        CacheFinanceUtils.bulkLongCachePut(["TSE:ZTL"], "PRICE", [44.4], 1);
+
+        const result = CacheFinance.getBulkFinanceData(
+            ["TSE:ZTL"],
+            "PRICE",
+            ["#N/A"],
+            1200
+        );
+
+        expect(result).toEqual([[44.4]]);
+        expect(thirdPartySpy).not.toHaveBeenCalled();
+    });
+
+    it("uses long cache instead of refetching when the refresh interval has elapsed", () => {
+        const thirdPartySpy = vi.spyOn(ThirdPartyFinance, "getMissingStockAttributesFromThirdParty");
+        const staleFetchTime = Date.now() - (1300 * 1000);
+        CacheFinanceUtils.bulkLongCachePut(["TSE:ZTL"], "PRICE", [44.4], 1, staleFetchTime);
+
+        const result = CacheFinance.getBulkFinanceData(
+            ["TSE:ZTL"],
+            "PRICE",
+            ["#N/A"],
+            1200
+        );
+
+        expect(result).toEqual([[44.4]]);
+        expect(thirdPartySpy).not.toHaveBeenCalled();
+    });
+
+    it("backfills long cache when values are served from short cache", () => {
+        const thirdPartySpy = vi.spyOn(ThirdPartyFinance, "getMissingStockAttributesFromThirdParty");
+        CacheFinanceUtils.putFinanceValuesIntoShortCache(["PRICE|TSE:ZTL"], [55.5], 1200);
+
+        CacheFinance.getBulkFinanceData(["TSE:ZTL"], "PRICE", ["#N/A"]);
+        CacheFinanceUtils.bulkShortCacheRemoveAll(["TSE:ZTL"], "PRICE");
+
+        const result = CacheFinance.getBulkFinanceData(["TSE:ZTL"], "PRICE", ["#N/A"]);
+        expect(result).toEqual([[55.5]]);
+        expect(thirdPartySpy).not.toHaveBeenCalled();
+    });
+
     it("falls back to long cache values as a last resort", () => {
         vi.spyOn(ThirdPartyFinance, "getMissingStockAttributesFromThirdParty")
             .mockImplementation((symbols) => symbols.map(() => new StockAttributes()));
@@ -302,6 +345,56 @@ describe("CACHEFINANCE custom function", () => {
         expect(CACHEFINANCE("TSE:ZTL", "price", "#N/A")).toBe(99.1);
     });
 
+    it("returns cached values without third-party lookups on single-cell recalculation", () => {
+        const thirdPartySpy = vi.spyOn(ThirdPartyFinance, "getMissingStockAttributesFromThirdParty");
+        CacheFinanceUtils.bulkLongCachePut(["TSE:ZTL"], "PRICE", [88.8], 1);
+
+        expect(CacheFinance.getSingleFinanceData("TSE:ZTL", "PRICE", "#N/A")).toBe(88.8);
+        expect(CacheFinance.getSingleFinanceData("TSE:ZTL", "PRICE", "#N/A")).toBe(88.8);
+        expect(thirdPartySpy).not.toHaveBeenCalled();
+    });
+
+    it("uses long cache when short cache is empty for single-cell lookups", () => {
+        const thirdPartySpy = vi.spyOn(ThirdPartyFinance, "getMissingStockAttributesFromThirdParty");
+        CacheFinanceUtils.bulkLongCachePut(["TSE:ZTL"], "PRICE", [66.1], 1);
+
+        expect(CACHEFINANCE("TSE:ZTL", "price", "#N/A")).toBe(66.1);
+        expect(thirdPartySpy).not.toHaveBeenCalled();
+    });
+
+    it("does not treat numeric GOOGLEFINANCE values as backdoor commands", () => {
+        expect(CacheFinanceUtils.isBackdoorCommand(12.34)).toBe(false);
+        expect(CacheFinanceUtils.isBackdoorCommand("CLEARCACHE")).toBe(true);
+    });
+
+    it("returns instantly from cache without logging on sheet recalculation", () => {
+        const logSpy = vi.spyOn(Logger, "log");
+        CacheFinanceUtils.bulkLongCachePut(["TSE:ZTL"], "PRICE", [71.2], 1);
+
+        expect(CacheFinance.resolveSingleFinanceData("TSE:ZTL", "PRICE", "#N/A")).toBe(71.2);
+        expect(logSpy).not.toHaveBeenCalled();
+    });
+
+    it("returns cached value when GOOGLEFINANCE is still loading during a sort", () => {
+        CacheFinanceUtils.bulkLongCachePut(["TSE:ZTL"], "PRICE", [81.5], 1);
+
+        expect(CacheFinance.tryGetCachedFinanceValue("TSE:ZTL", "PRICE", "Loading...")).toBe(81.5);
+    });
+
+    it("passes through a valid GOOGLEFINANCE value like native GOOGLEFINANCE does", () => {
+        CacheFinanceUtils.bulkLongCachePut(["TSE:ZTL"], "PRICE", [50], 1);
+
+        expect(CacheFinance.tryGetCachedFinanceValue("TSE:ZTL", "PRICE", 99.9)).toBe(99.9);
+    });
+
+    it("uses cache when GOOGLEFINANCE returns #N/A without refetching", () => {
+        const thirdPartySpy = vi.spyOn(ThirdPartyFinance, "getMissingStockAttributesFromThirdParty");
+        CacheFinanceUtils.bulkLongCachePut(["TSE:ZTL"], "PRICE", [66.1], 1);
+
+        expect(CacheFinance.resolveSingleFinanceData("TSE:ZTL", "PRICE", "#N/A")).toBe(66.1);
+        expect(thirdPartySpy).not.toHaveBeenCalled();
+    });
+
     it("returns an empty string for blank symbol or attribute", () => {
         expect(CACHEFINANCE("", "price")).toBe("");
         expect(CACHEFINANCE("TSE:ZTL", "")).toBe("");
@@ -414,5 +507,17 @@ describe("CACHEFINANCES custom function", () => {
         expect(CacheFinanceUtils.normalizeSymbolInput(undefined)).toBe("");
         expect(CacheFinanceUtils.normalizeSymbolInput(" tse:ztl ")).toBe("TSE:ZTL");
         expect(CacheFinanceUtils.normalizeAttributeInput(undefined)).toBe("price");
+    });
+
+    it("keeps default values aligned when blank symbols are removed", () => {
+        const pairs = CacheFinanceUtils.pairSymbolsWithValues(
+            ["TSE:A", "", "TSE:B"],
+            [10, 99, 20]
+        );
+
+        expect(pairs).toEqual([
+            { symbol: "TSE:A", value: 10 },
+            { symbol: "TSE:B", value: 20 }
+        ]);
     });
 });

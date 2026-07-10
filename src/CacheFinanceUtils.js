@@ -58,7 +58,7 @@ class CacheFinanceUtils {                       // skipcq: JS-0128
      * @param {String} attribute 
      * @param {any[]} cacheData 
      */
-    static bulkLongCachePut(symbols, attribute, cacheData, daysToHold = 7) {
+    static bulkLongCachePut(symbols, attribute, cacheData, daysToHold = 7, fetchedAt = Date.now()) {
         const cacheKeys = CacheFinanceUtils.createCacheKeyList(symbols, attribute);
         const newCacheKeys = [];
         const newCacheData = [];
@@ -70,7 +70,7 @@ class CacheFinanceUtils {                       // skipcq: JS-0128
             }
         });
 
-        ScriptSettings.putAllKeysWithData(newCacheKeys, newCacheData, daysToHold);
+        ScriptSettings.putAllKeysWithData(newCacheKeys, newCacheData, daysToHold, fetchedAt);
     }
 
     /**
@@ -81,7 +81,74 @@ class CacheFinanceUtils {                       // skipcq: JS-0128
      */
     static bulkLongCacheGet(symbols, attribute) {
         const cacheKeyList = CacheFinanceUtils.createCacheKeyList(symbols, attribute);
+
+        if (cacheKeyList.length === 1) {
+            return [CacheFinanceUtils.getLongCacheValue(cacheKeyList[0])];
+        }
+
         return ScriptSettings.getAll(cacheKeyList);
+    }
+
+    /**
+     * Reads one long-cache entry without loading every script property.
+     * @param {String} cacheKey
+     * @returns {any|null}
+     */
+    static getLongCacheValue(cacheKey) {
+        return ScriptSettings.getOne(cacheKey);
+    }
+
+    /**
+     * @param {String[]} symbols
+     * @param {String} attribute
+     * @returns {{value: any, fetchedAt: Number|null}[]}
+     */
+    static bulkLongCacheGetWithMetadata(symbols, attribute) {
+        const cacheKeyList = CacheFinanceUtils.createCacheKeyList(symbols, attribute);
+
+        if (cacheKeyList.length === 1) {
+            return [ScriptSettings.getOneWithMetadata(cacheKeyList[0])];
+        }
+
+        return ScriptSettings.getAllWithMetadata(cacheKeyList);
+    }
+
+    /**
+     * Returns true when a third-party website lookup is due based on the last fetch time.
+     * Entries without a fetch timestamp are treated as still fresh to avoid refetching on sheet recalculations.
+     * @param {Number|null} fetchedAt
+     * @param {Number} cacheSeconds
+     * @returns {Boolean}
+     */
+    static isThirdPartyFetchDue(fetchedAt, cacheSeconds) {
+        if (fetchedAt === null || fetchedAt === undefined) {
+            return false;
+        }
+
+        return (Date.now() - fetchedAt) >= cacheSeconds * 1000;
+    }
+
+    /**
+     * Keep symbol/default-value pairs aligned while dropping blank symbols.
+     * @param {any[]} symbols
+     * @param {any[]} values
+     * @returns {{symbol: String, value: any}[]}
+     */
+    static pairSymbolsWithValues(symbols, values) {
+        const pairs = [];
+
+        for (let i = 0; i < symbols.length; i++) {
+            const symbol = CacheFinanceUtils.normalizeSymbolInput(symbols[i]);
+
+            if (symbol !== "") {
+                pairs.push({
+                    symbol,
+                    value: i < values.length ? values[i] : undefined
+                });
+            }
+        }
+
+        return pairs;
     }
 
     /**
@@ -101,15 +168,18 @@ class CacheFinanceUtils {                       // skipcq: JS-0128
      */
     static getFinanceValuesFromShortCache(cacheKeys) {
         const shortCache = CacheService.getScriptCache();
-
-        //  Object with key/value pairs for all items found in cache.
-        const data = shortCache.getAll(cacheKeys);
         const cachedDataList = [];
+        const BATCH_SIZE = 100;
 
-        cacheKeys.forEach(key => {
-            const parsedData = data[key] === undefined ? null : JSON.parse(data[key]);
-            cachedDataList.push(parsedData);
-        });
+        for (let offset = 0; offset < cacheKeys.length; offset += BATCH_SIZE) {
+            const batchKeys = cacheKeys.slice(offset, offset + BATCH_SIZE);
+            const data = shortCache.getAll(batchKeys);
+
+            batchKeys.forEach(key => {
+                const parsedData = data[key] === undefined ? null : JSON.parse(data[key]);
+                cachedDataList.push(parsedData);
+            });
+        }
 
         return cachedDataList;
     }
@@ -134,6 +204,111 @@ class CacheFinanceUtils {                       // skipcq: JS-0128
         if (updateCounter > 0) {
             const shortCache = CacheService.getScriptCache();
             shortCache.putAll(bulkData, cacheSeconds);
+        }
+    }
+
+    /**
+     * Writes short-cache entries only when the value has changed.
+     * @param {String[]} cacheKeys
+     * @param {any[]} newCacheData
+     * @param {Number} cacheSeconds
+     */
+    static putFinanceValuesIntoShortCacheIfChanged(cacheKeys, newCacheData, cacheSeconds = 21600) {
+        if (cacheKeys.length === 0) {
+            return;
+        }
+
+        const shortCache = CacheService.getScriptCache();
+        const existing = shortCache.getAll(cacheKeys);
+        const bulkData = {};
+
+        for (let i = 0; i < cacheKeys.length; i++) {
+            if (!CacheFinanceUtils.isValidGoogleValue(newCacheData[i])) {
+                continue;
+            }
+
+            const serialized = JSON.stringify(newCacheData[i]);
+            if (existing[cacheKeys[i]] === serialized) {
+                continue;
+            }
+
+            bulkData[cacheKeys[i]] = serialized;
+        }
+
+        if (Object.keys(bulkData).length > 0) {
+            shortCache.putAll(bulkData, cacheSeconds);
+        }
+    }
+
+    /**
+     * @param {String} cacheKey
+     * @param {any} value
+     * @param {Number} cacheSeconds
+     */
+    static putFinanceValueIfChanged(cacheKey, value, cacheSeconds = 21600) {
+        CacheFinanceUtils.putFinanceValuesIntoShortCacheIfChanged([cacheKey], [value], cacheSeconds);
+    }
+
+    /**
+     * @param {any[]} symbols
+     * @param {String} attribute
+     * @param {any[]} newCacheData
+     * @param {Number} cacheSeconds
+     */
+    static bulkShortCachePutIfChanged(symbols, attribute, newCacheData, cacheSeconds) {
+        if (symbols.length === 0 || newCacheData.length === 0) {
+            return;
+        }
+
+        const cacheKeyList = CacheFinanceUtils.createCacheKeyList(symbols, attribute);
+        CacheFinanceUtils.putFinanceValuesIntoShortCacheIfChanged(cacheKeyList, newCacheData, cacheSeconds);
+    }
+
+    /**
+     * @param {any} googleValue
+     * @returns {Boolean}
+     */
+    static isBackdoorCommand(googleValue) {
+        if (googleValue === null || googleValue === undefined || googleValue === "") {
+            return false;
+        }
+
+        if (typeof googleValue === "number" || Array.isArray(googleValue)) {
+            return false;
+        }
+
+        const command = googleValue.toString().toUpperCase().trim();
+        return [
+            "?",
+            "HELP",
+            "TEST",
+            "CLEARCACHE",
+            "EXPIRECACHE",
+            "REMOVE",
+            "GET",
+            "GETBLOCKED",
+            "SET",
+            "SETBLOCKED",
+            "LIST"
+        ].includes(command);
+    }
+
+    /**
+     * Ensures long cache has a value without overwriting an existing entry.
+     * @param {String} symbol
+     * @param {String} attribute
+     * @param {any} value
+     */
+    static backfillLongCacheIfMissing(symbol, attribute, value) {
+        if (!CacheFinanceUtils.isValidGoogleValue(value)) {
+            return;
+        }
+
+        const cacheKey = CacheFinanceUtils.makeCacheKey(symbol, attribute);
+        const existing = CacheFinanceUtils.getLongCacheValue(cacheKey);
+
+        if (!CacheFinanceUtils.isValidGoogleValue(existing)) {
+            CacheFinanceUtils.bulkLongCachePut([symbol], attribute, [value]);
         }
     }
 
@@ -184,6 +359,63 @@ class CacheFinanceUtils {                       // skipcq: JS-0128
     }
 
     /**
+     * @param {String} symbol
+     * @param {String} attribute
+     * @returns {String}
+     */
+    static makeFetchingCacheKey(symbol, attribute) {
+        return `FETCHING|${CacheFinanceUtils.makeCacheKey(symbol, attribute)}`;
+    }
+
+    /**
+     * Marks symbols as currently being looked up so parallel custom-function runs do not duplicate fetches.
+     * @param {String[]} symbols
+     * @param {String} attribute
+     * @param {Number} cacheSeconds
+     */
+    static markSymbolsFetching(symbols, attribute, cacheSeconds = 120) {
+        if (symbols.length === 0) {
+            return;
+        }
+
+        const bulkData = {};
+        symbols.forEach(symbol => {
+            bulkData[CacheFinanceUtils.makeFetchingCacheKey(symbol, attribute)] = "1";
+        });
+        CacheService.getScriptCache().putAll(bulkData, cacheSeconds);
+    }
+
+    /**
+     * @param {String[]} symbols
+     * @param {String} attribute
+     * @returns {String[]}
+     */
+    static filterSymbolsNotFetching(symbols, attribute) {
+        if (symbols.length === 0) {
+            return [];
+        }
+
+        const cache = CacheService.getScriptCache();
+        const fetchKeys = symbols.map(symbol => CacheFinanceUtils.makeFetchingCacheKey(symbol, attribute));
+        const inFlight = cache.getAll(fetchKeys);
+
+        return symbols.filter((_symbol, index) => inFlight[fetchKeys[index]] === undefined);
+    }
+
+    /**
+     * @param {String[]} symbols
+     * @param {String} attribute
+     */
+    static clearSymbolsFetching(symbols, attribute) {
+        if (symbols.length === 0) {
+            return;
+        }
+
+        const fetchKeys = symbols.map(symbol => CacheFinanceUtils.makeFetchingCacheKey(symbol, attribute));
+        CacheService.getScriptCache().removeAll(fetchKeys);
+    }
+
+    /**
      * It is common to have extra empty records loaded at end of table.
      * Remove those empty records at END of table only.
      * @param {any[][]} tableData 
@@ -210,7 +442,18 @@ class CacheFinanceUtils {                       // skipcq: JS-0128
      * @returns {Boolean}
      */
     static isValidGoogleValue(value) {
-        return value !== null && value !== undefined && value !== "#N/A" && value !== '#ERROR!' && value !== '';
+        if (value === null || value === undefined || value === "#N/A" || value === "#ERROR!" || value === "") {
+            return false;
+        }
+
+        if (typeof value === "string") {
+            const normalized = value.trim().toUpperCase();
+            if (normalized === "LOADING" || normalized === "LOADING..." || normalized === "LOADING…") {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

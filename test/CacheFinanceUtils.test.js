@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CacheFinanceUtils } from "../src/CacheFinanceUtils.js";
 
 describe("CacheFinanceUtils", () => {
@@ -23,7 +23,9 @@ describe("CacheFinanceUtils", () => {
         [undefined, false],
         ["#N/A", false],
         ["#ERROR!", false],
-        ["", false]
+        ["", false],
+        ["Loading...", false],
+        ["loading", false]
     ])("isValidGoogleValue(%s) returns %s", (value, expected) => {
         expect(CacheFinanceUtils.isValidGoogleValue(value)).toBe(expected);
     });
@@ -68,11 +70,33 @@ describe("CacheFinanceUtils", () => {
             .toEqual([null, 10.5]);
     });
 
+    it("does not rewrite short-cache entries when the value is unchanged", () => {
+        const keys = ["PRICE|TSE:ZTL"];
+        const putSpy = vi.spyOn(CacheService.getScriptCache(), "putAll");
+
+        CacheFinanceUtils.putFinanceValuesIntoShortCache(keys, [10.5], 1200);
+        putSpy.mockClear();
+
+        CacheFinanceUtils.putFinanceValuesIntoShortCacheIfChanged(keys, [10.5], 1200);
+        expect(putSpy).not.toHaveBeenCalled();
+    });
+
     it("stores and retrieves values from the long cache in bulk", () => {
         CacheFinanceUtils.bulkLongCachePut(["TSE:A", "TSE:B"], "PRICE", [10, "#N/A"], 1);
 
         expect(CacheFinanceUtils.bulkLongCacheGet(["TSE:A", "TSE:B"], "PRICE"))
             .toEqual([10, null]);
+    });
+
+    it("tracks fetch timestamps in long cache metadata", () => {
+        const fetchedAt = Date.now() - 5000;
+        CacheFinanceUtils.bulkLongCachePut(["TSE:A"], "PRICE", [10], 1, fetchedAt);
+
+        expect(CacheFinanceUtils.bulkLongCacheGetWithMetadata(["TSE:A"], "PRICE"))
+            .toEqual([{ value: 10, fetchedAt }]);
+        expect(CacheFinanceUtils.isThirdPartyFetchDue(fetchedAt, 1200)).toBe(false);
+        expect(CacheFinanceUtils.isThirdPartyFetchDue(fetchedAt, 1)).toBe(true);
+        expect(CacheFinanceUtils.isThirdPartyFetchDue(null, 1200)).toBe(false);
     });
 
     it("removes all short-cache entries for the requested symbols", () => {
