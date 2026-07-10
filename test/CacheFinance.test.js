@@ -199,6 +199,22 @@ describe("CacheFinance.getBulkFinanceData", () => {
         const result = CacheFinance.getHistoricalFinanceData("NASDAQ:AAPL", "CLOSE", "#N/A", query);
         expect(result).toEqual(yahooSeries);
     });
+
+    it("returns a single value when only startDate is provided", () => {
+        const yahooSeries = [
+            [new Date("2024-01-01T00:00:00.000Z"), 55.5],
+            [new Date("2024-01-02T00:00:00.000Z"), 56.1]
+        ];
+        vi.spyOn(YahooApi, "getHistoricalInfo").mockReturnValue(yahooSeries);
+        const query = CacheFinanceUtils.buildHistoricalQuery(
+            new Date("2024-01-01T00:00:00.000Z"),
+            "",
+            "DAILY"
+        );
+
+        const result = CacheFinance.getHistoricalFinanceData("CURRENCY:USDEUR", "PRICE", "#N/A", query);
+        expect(result).toBe(55.5);
+    });
 });
 
 describe("CacheFinance backdoor commands", () => {
@@ -279,16 +295,18 @@ describe("CacheFinance backdoor commands", () => {
 describe("CACHEFINANCE custom function", () => {
     beforeEach(() => {
         vi.restoreAllMocks();
-        mockThirdPartyLookup({ PRICE: 99.1 });
     });
 
     it("returns a single looked-up value", () => {
+        mockThirdPartyLookup({ PRICE: 99.1 });
         expect(CACHEFINANCE("TSE:ZTL", "price", "#N/A")).toBe(99.1);
     });
 
     it("returns an empty string for blank symbol or attribute", () => {
         expect(CACHEFINANCE("", "price")).toBe("");
         expect(CACHEFINANCE("TSE:ZTL", "")).toBe("");
+        expect(CACHEFINANCE(undefined, "price")).toBe("");
+        expect(CACHEFINANCE(null, "price")).toBe("");
     });
 
     it("returns historical data from a valid GOOGLEFINANCE series", () => {
@@ -321,13 +339,50 @@ describe("CACHEFINANCE custom function", () => {
             "NASDAQ:AAPL",
             "close",
             "#N/A",
-            "",
             new Date("2024-01-01T00:00:00.000Z"),
             new Date("2024-01-02T00:00:00.000Z"),
             "DAILY"
         );
 
         expect(result).toEqual(yahooSeries);
+    });
+
+    it("falls back to Yahoo historical data for currency pairs", () => {
+        const yahooSeries = [
+            [new Date("2024-01-01T00:00:00.000Z"), 0.8736],
+            [new Date("2024-01-02T00:00:00.000Z"), 0.8741]
+        ];
+        vi.spyOn(YahooApi, "getHistoricalInfo").mockReturnValue(yahooSeries);
+
+        const result = CACHEFINANCE(
+            "CURRENCY:USDEUR",
+            "price",
+            "#N/A",
+            new Date("2024-01-01T00:00:00.000Z"),
+            new Date("2024-01-02T00:00:00.000Z"),
+            "DAILY"
+        );
+
+        expect(result).toEqual(yahooSeries);
+        expect(YahooApi.getHistoricalInfo).toHaveBeenCalledWith(
+            "CURRENCY:USDEUR",
+            "PRICE",
+            expect.objectContaining({ interval: "DAILY" })
+        );
+    });
+
+    it("returns a single value when only startDate is provided", () => {
+        const yahooSeries = [[new Date("2024-01-01T00:00:00.000Z"), 0.8736]];
+        vi.spyOn(YahooApi, "getHistoricalInfo").mockReturnValue(yahooSeries);
+
+        const result = CACHEFINANCE(
+            "CURRENCY:USDEUR",
+            "price",
+            "#N/A",
+            new Date("2024-01-01T00:00:00.000Z")
+        );
+
+        expect(result).toBe(0.8736);
     });
 });
 
@@ -352,5 +407,12 @@ describe("CACHEFINANCES custom function", () => {
 
     it("returns an empty string when no symbols are provided", () => {
         expect(CACHEFINANCES([], "price", [])).toBe("");
+        expect(CACHEFINANCES([[undefined]], "price", [[""]])).toBe("");
+    });
+
+    it("normalizes undefined symbol inputs", () => {
+        expect(CacheFinanceUtils.normalizeSymbolInput(undefined)).toBe("");
+        expect(CacheFinanceUtils.normalizeSymbolInput(" tse:ztl ")).toBe("TSE:ZTL");
+        expect(CacheFinanceUtils.normalizeAttributeInput(undefined)).toBe("price");
     });
 });

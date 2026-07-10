@@ -148,6 +148,32 @@ class CacheFinanceUtils {                       // skipcq: JS-0128
     }
 
     /**
+     * Normalize a symbol from Sheets (undefined/null/blank cells become "").
+     * @param {any} symbol
+     * @returns {String}
+     */
+    static normalizeSymbolInput(symbol) {
+        if (symbol === undefined || symbol === null) {
+            return "";
+        }
+
+        return symbol.toString().trim().toUpperCase();
+    }
+
+    /**
+     * Normalize an attribute from Sheets (undefined/null/blank falls back to "price").
+     * @param {any} attribute
+     * @returns {String}
+     */
+    static normalizeAttributeInput(attribute) {
+        if (attribute === undefined || attribute === null) {
+            return "price";
+        }
+
+        return attribute.toString().trim();
+    }
+
+    /**
      * 
      * @param {String} symbol 
      * @param {String} attribute 
@@ -236,11 +262,79 @@ class CacheFinanceUtils {                       // skipcq: JS-0128
             return null;
         }
 
+        const hasEnd = endDateOrNumDays !== "" && endDateOrNumDays !== null && endDateOrNumDays !== undefined;
+
         return {
             startDate: dateRange.start,
             endDate: dateRange.end,
             endDateOrNumDays,
-            interval: CacheFinanceUtils.normalizeHistoricalInterval(interval)
+            interval: CacheFinanceUtils.normalizeHistoricalInterval(interval),
+            singleDay: !hasEnd
+        };
+    }
+
+    /**
+     * Corrects common parameter misalignment when cmdOption is left empty without a trailing comma.
+     * @param {any} cmdOption
+     * @param {any} startDate
+     * @param {any} endDateOrNumDays
+     * @param {any} interval
+     * @returns {{startDate: any, endDateOrNumDays: any, interval: any}}
+     */
+    static resolveHistoricalParameters(cmdOption, startDate, endDateOrNumDays, interval) {
+        const cmdDate = CacheFinanceUtils.parseSheetDate(cmdOption);
+        const startDateEmpty = startDate === "" || startDate === null || startDate === undefined;
+
+        if (cmdDate !== null && startDateEmpty) {
+            return {
+                startDate: cmdOption,
+                endDateOrNumDays: "",
+                interval: CacheFinanceUtils.isHistoricalIntervalToken(endDateOrNumDays) ? endDateOrNumDays : interval
+            };
+        }
+
+        const looksLikeInterval = CacheFinanceUtils.isHistoricalIntervalToken(endDateOrNumDays);
+        const shiftedStartDate = CacheFinanceUtils.parseSheetDate(startDate);
+        const shiftedNumDays = CacheFinanceUtils.parseHistoricalNumDays(startDate);
+
+        if (cmdDate !== null && looksLikeInterval && (shiftedStartDate !== null || shiftedNumDays !== null)) {
+            return {
+                startDate: cmdOption,
+                endDateOrNumDays: startDate,
+                interval: endDateOrNumDays
+            };
+        }
+
+        return { startDate, endDateOrNumDays, interval };
+    }
+
+    /**
+     * Build a historical query from a GOOGLEFINANCE 2D result when explicit dates were omitted.
+     * @param {any} googleFinanceValue
+     * @param {any} interval
+     * @returns {{startDate: Date, endDate: Date, endDateOrNumDays: any, interval: String}|null}
+     */
+    static buildHistoricalQueryFromSeries(googleFinanceValue, interval = "") {
+        if (!CacheFinanceUtils.isValidGoogleHistoricalValue(googleFinanceValue)) {
+            return null;
+        }
+
+        const dates = googleFinanceValue
+            .map(row => (Array.isArray(row) ? CacheFinanceUtils.parseSheetDate(row[0]) : null))
+            .filter(date => date !== null);
+
+        if (dates.length === 0) {
+            return null;
+        }
+
+        dates.sort((a, b) => a.getTime() - b.getTime());
+
+        return {
+            startDate: dates[0],
+            endDate: dates[dates.length - 1],
+            endDateOrNumDays: "",
+            interval: CacheFinanceUtils.normalizeHistoricalInterval(interval),
+            singleDay: googleFinanceValue.length === 1
         };
     }
 
@@ -248,6 +342,10 @@ class CacheFinanceUtils {                       // skipcq: JS-0128
      * @param {any} interval
      * @returns {String}
      */
+    static isHistoricalIntervalToken(value) {
+        return ["DAILY", "WEEKLY", "1", "7"].includes((value ?? "").toString().toUpperCase().trim());
+    }
+
     static normalizeHistoricalInterval(interval) {
         if (interval === "" || interval === null || interval === undefined) {
             return "DAILY";
@@ -462,6 +560,53 @@ class CacheFinanceUtils {                       // skipcq: JS-0128
         }
 
         return CacheFinanceUtils.reviveHistoricalSeries(data[0]);
+    }
+
+    /**
+     * Return one value from a historical series for a specific day (GOOGLEFINANCE single-date behavior).
+     * @param {any[][]} series
+     * @param {Date} targetDate
+     * @returns {any|null}
+     */
+    static extractHistoricalScalar(series, targetDate) {
+        if (!Array.isArray(series) || series.length === 0) {
+            return null;
+        }
+
+        const targetKey = CacheFinanceUtils.formatDateForCacheKey(targetDate);
+        const matching = series.filter((row) => {
+            if (!Array.isArray(row) || row.length < 2) {
+                return false;
+            }
+
+            return CacheFinanceUtils.formatDateForCacheKey(row[0]) === targetKey;
+        });
+
+        const row = matching.length > 0 ? matching[matching.length - 1] : series[series.length - 1];
+        const value = Array.isArray(row) ? row[1] : null;
+
+        return CacheFinanceUtils.isValidGoogleValue(value) ? value : null;
+    }
+
+    /**
+     * @param {any} result
+     * @param {{singleDay?: Boolean, startDate: Date}} historicalQuery
+     * @returns {any}
+     */
+    static formatHistoricalResult(result, historicalQuery) {
+        if (historicalQuery.singleDay !== true) {
+            return result;
+        }
+
+        if (CacheFinanceUtils.isValidGoogleValue(result) && !Array.isArray(result)) {
+            return result;
+        }
+
+        if (!CacheFinanceUtils.isValidGoogleHistoricalValue(result)) {
+            return result;
+        }
+
+        return CacheFinanceUtils.extractHistoricalScalar(result, historicalQuery.startDate) ?? "#N/A";
     }
 }
 

@@ -260,7 +260,11 @@ describe("YahooApi", () => {
 
         expect(YahooApi.getHistoricalURL("NASDAQ:VTC", query, "CLOSE"))
             .toBe("https://query1.finance.yahoo.com/v8/finance/chart/VTC?period1=1704067200&period2=1706745600&interval=1wk");
-        expect(YahooApi.getHistoricalURL("CURRENCY:USDEUR", query, "CLOSE")).toBe("");
+        expect(YahooApi.getHistoricalChartTicker("CURRENCY:USDEUR")).toBe("USDEUR=X");
+        expect(YahooApi.getHistoricalURL("CURRENCY:USDEUR", query, "CLOSE"))
+            .toBe("https://query1.finance.yahoo.com/v8/finance/chart/USDEUR=X?period1=1704067200&period2=1706745600&interval=1wk");
+        expect(YahooApi.getHistoricalURL("CURRENCY:CADEUR", query, "PRICE"))
+            .toBe("https://query1.finance.yahoo.com/v8/finance/chart/CADEUR=X?period1=1704067200&period2=1706745600&interval=1wk");
     });
 
     it("parses historical chart JSON responses", () => {
@@ -282,6 +286,17 @@ describe("YahooApi", () => {
         expect(series?.[0][1]).toBe(100.5);
         expect(series?.[1][1]).toBe(101.25);
         expect(series?.[0][0]).toBeInstanceOf(Date);
+    });
+
+    it("logs and returns null when Yahoo reports no historical data", () => {
+        const json = JSON.stringify({
+            chart: {
+                result: null,
+                error: { code: "Not Found", description: "No data found" }
+            }
+        });
+
+        expect(YahooApi.parseHistoricalResponse(json, "CLOSE")).toBeNull();
     });
 });
 

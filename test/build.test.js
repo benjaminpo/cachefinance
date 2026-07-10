@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
     buildCacheFinanceBundle,
+    buildCacheFinanceMinBundle,
     enableDebugExports,
     hashSections,
     isCacheFinanceBundleCurrent,
@@ -62,12 +63,25 @@ describe("cachefinance bundle", () => {
         expect(bundle).not.toContain("function testUpdateMaster");
     });
 
-    it("writes dist/CacheFinance.js only when content changes", () => {
+    it("builds a valid minified Apps Script bundle", () => {
+        const { bundle, sourceHash } = buildCacheFinanceBundle();
+        const minBundle = buildCacheFinanceMinBundle(bundle, sourceHash);
+
+        expect(minBundle).toContain(`Source hash: ${sourceHash}`);
+        expect(minBundle).toContain("function CACHEFINANCE");
+        expect(minBundle).toContain("class CacheFinanceUtils");
+        expect(minBundle.length).toBeLessThan(bundle.length);
+        expect(() => validateBundleContent(minBundle)).not.toThrow();
+    });
+
+    it("writes dist bundles only when content changes", () => {
         const first = writeCacheFinanceBundle();
         const second = writeCacheFinanceBundle();
 
         expect(fs.existsSync(paths.dist)).toBe(true);
+        expect(fs.existsSync(paths.distMin)).toBe(true);
         expect(first.bundle).toBe(second.bundle);
+        expect(first.minBundle).toBe(second.minBundle);
         expect(isCacheFinanceBundleCurrent()).toBe(true);
     });
 });

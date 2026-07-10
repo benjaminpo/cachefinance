@@ -32,6 +32,9 @@ class Logger {
  * @customfunction
  */
 function CACHEFINANCE(symbol, attribute = "price", googleFinanceValue = "", cmdOption = "", startDate = "", endDateOrNumDays = "", interval = "") {         // skipcq: JS-0128
+    symbol = CacheFinanceUtils.normalizeSymbolInput(symbol);
+    attribute = CacheFinanceUtils.normalizeAttributeInput(attribute);
+
     Logger.log(`CACHEFINANCE:${symbol}=${attribute}. Google=${googleFinanceValue}`);
 
     //  Special inputs that perform something other than a finance request.
@@ -44,10 +47,22 @@ function CACHEFINANCE(symbol, attribute = "price", googleFinanceValue = "", cmdO
         return '';
     }
 
-    const historicalQuery = CacheFinanceUtils.buildHistoricalQuery(startDate, endDateOrNumDays, interval);
+    const historicalParams = CacheFinanceUtils.resolveHistoricalParameters(
+        cmdOption,
+        startDate,
+        endDateOrNumDays,
+        interval
+    );
+    const historicalQuery = CacheFinanceUtils.buildHistoricalQuery(
+        historicalParams.startDate,
+        historicalParams.endDateOrNumDays,
+        historicalParams.interval
+    )
+        ?? CacheFinanceUtils.buildHistoricalQueryFromSeries(googleFinanceValue, historicalParams.interval);
+
     if (historicalQuery !== null) {
         return CacheFinance.getHistoricalFinanceData(
-            symbol.toUpperCase(),
+            symbol,
             attribute.toUpperCase().trim(),
             googleFinanceValue,
             historicalQuery
@@ -91,8 +106,10 @@ function CACHEFINANCES(symbols, attribute = "price", defaultValues = [], webSite
     const singleSymbols = CacheFinanceUtils.convertRowsToSingleArray(trimmedSymbols);
     const newValues = CacheFinanceUtils.convertRowsToSingleArray(trimmedValues);
 
-    const newSymbols = singleSymbols.map(sym => sym.toUpperCase());
-    attribute = attribute.toUpperCase().trim();
+    const newSymbols = singleSymbols
+        .map(sym => CacheFinanceUtils.normalizeSymbolInput(sym))
+        .filter(sym => sym !== "");
+    attribute = CacheFinanceUtils.normalizeAttributeInput(attribute).toUpperCase();
 
     if (newSymbols.length === 0 || attribute === '') {
         return '';
@@ -172,16 +189,24 @@ class CacheFinance {
         const MAX_SHORT_CACHE_SECONDS = 21600;
         const cacheKey = CacheFinanceUtils.makeHistoricalCacheKey(symbol, attribute, historicalQuery);
 
-        if (CacheFinanceUtils.isValidGoogleHistoricalValue(googleFinanceValue)) {
-            const serialized = CacheFinanceUtils.serializeHistoricalSeries(googleFinanceValue);
+        if (historicalQuery.singleDay === true && CacheFinanceUtils.isValidGoogleValue(googleFinanceValue)) {
+            const series = [[historicalQuery.startDate, googleFinanceValue]];
+            const serialized = CacheFinanceUtils.serializeHistoricalSeries(series);
             CacheFinanceUtils.putFinanceValuesIntoShortCache([cacheKey], [serialized], MAX_SHORT_CACHE_SECONDS);
             CacheFinanceUtils.putHistoricalValuesIntoLongCache(cacheKey, serialized);
             return googleFinanceValue;
         }
 
+        if (CacheFinanceUtils.isValidGoogleHistoricalValue(googleFinanceValue)) {
+            const serialized = CacheFinanceUtils.serializeHistoricalSeries(googleFinanceValue);
+            CacheFinanceUtils.putFinanceValuesIntoShortCache([cacheKey], [serialized], MAX_SHORT_CACHE_SECONDS);
+            CacheFinanceUtils.putHistoricalValuesIntoLongCache(cacheKey, serialized);
+            return CacheFinanceUtils.formatHistoricalResult(googleFinanceValue, historicalQuery);
+        }
+
         const cachedSeries = CacheFinance.getHistoricalFinanceValueFromShortCache(cacheKey);
         if (cachedSeries !== null) {
-            return cachedSeries;
+            return CacheFinanceUtils.formatHistoricalResult(cachedSeries, historicalQuery);
         }
 
         const thirdPartySeries = YahooApi.getHistoricalInfo(symbol, attribute, historicalQuery);
@@ -192,12 +217,12 @@ class CacheFinance {
                 : webSiteLookupCacheSeconds;
             CacheFinanceUtils.putFinanceValuesIntoShortCache([cacheKey], [serialized], cacheSeconds);
             CacheFinanceUtils.putHistoricalValuesIntoLongCache(cacheKey, serialized);
-            return thirdPartySeries;
+            return CacheFinanceUtils.formatHistoricalResult(thirdPartySeries, historicalQuery);
         }
 
         const longCachedSeries = CacheFinanceUtils.getHistoricalValuesFromLongCache(cacheKey);
         if (longCachedSeries !== null) {
-            return longCachedSeries;
+            return CacheFinanceUtils.formatHistoricalResult(longCachedSeries, historicalQuery);
         }
 
         return "#N/A";

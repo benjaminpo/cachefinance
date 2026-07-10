@@ -484,18 +484,53 @@ class YahooApi {
      */
     static getInfo(symbol, attribute) {
         const URL = YahooApi.getURL(symbol, attribute);
+        const html = YahooApi.fetchChartContent(URL);
 
-        let html = null;
-        try {
-            html = UrlFetchApp.fetch(URL).getContentText();
-        }
-        catch {
+        if (html === null) {
             return new StockAttributes();
         }
 
         Logger.log(`getInfo:  ${symbol}.  URL = ${URL}`);
 
         return YahooApi.parseResponse(html, symbol);
+    }
+
+    /**
+     * @returns {Object}
+     */
+    static getFetchOptions() {
+        return {
+            muteHttpExceptions: true,
+            headers: {
+                "User-Agent": "Mozilla/5.0 (compatible; CacheFinance/1.2; +https://github.com/demmings/cachefinance)"
+            }
+        };
+    }
+
+    /**
+     * @param {String} URL
+     * @returns {String|null}
+     */
+    static fetchChartContent(URL) {
+        if (URL === "") {
+            return null;
+        }
+
+        try {
+            const response = UrlFetchApp.fetch(URL, YahooApi.getFetchOptions());
+            const statusCode = response.getResponseCode();
+
+            if (statusCode !== 200) {
+                Logger.log(`Yahoo chart fetch failed. HTTP ${statusCode}. URL=${URL}`);
+                return null;
+            }
+
+            return response.getContentText();
+        }
+        catch (ex) {
+            Logger.log(`Yahoo chart fetch exception. URL=${URL}. ${ex}`);
+            return null;
+        }
     }
 
     /**
@@ -597,16 +632,35 @@ class YahooApi {
 
     /**
      * @param {String} symbol
+     * @returns {String}
+     */
+    static getHistoricalChartTicker(symbol) {
+        if (FinanceWebSites.getTickerCountryCode(symbol) === "fx") {
+            const parts = FinanceWebSites.getCurrencyTickers(symbol);
+
+            if (parts.fromCurrency === undefined || parts.toCurrency === undefined) {
+                return "";
+            }
+
+            return `${parts.fromCurrency}${parts.toCurrency}=X`;
+        }
+
+        return YahooApi.getTicker(symbol);
+    }
+
+    /**
+     * @param {String} symbol
      * @param {{startDate: Date, endDate: Date, interval: String}} historicalQuery
      * @param {String} attribute
      * @returns {String}
      */
     static getHistoricalURL(symbol, historicalQuery, attribute) {
-        if (FinanceWebSites.getTickerCountryCode(symbol) === "fx") {
+        if (!YahooApi.supportsHistoricalAttribute(attribute)) {
             return "";
         }
 
-        if (!YahooApi.supportsHistoricalAttribute(attribute)) {
+        const chartTicker = YahooApi.getHistoricalChartTicker(symbol);
+        if (chartTicker === "") {
             return "";
         }
 
@@ -614,7 +668,7 @@ class YahooApi {
         const period2 = CacheFinanceUtils.toUnixStartOfDay(historicalQuery.endDate) + 86400;
         const interval = historicalQuery.interval === "WEEKLY" ? "1wk" : "1d";
 
-        return `https://query1.finance.yahoo.com/v8/finance/chart/${YahooApi.getTicker(symbol)}?period1=${period1}&period2=${period2}&interval=${interval}`;
+        return `https://query1.finance.yahoo.com/v8/finance/chart/${chartTicker}?period1=${period1}&period2=${period2}&interval=${interval}`;
     }
 
     /**
@@ -625,15 +679,9 @@ class YahooApi {
      */
     static getHistoricalInfo(symbol, attribute, historicalQuery) {
         const URL = YahooApi.getHistoricalURL(symbol, historicalQuery, attribute);
-        if (URL === "") {
-            return null;
-        }
+        const html = YahooApi.fetchChartContent(URL);
 
-        let html = null;
-        try {
-            html = UrlFetchApp.fetch(URL).getContentText();
-        }
-        catch {
+        if (html === null) {
             return null;
         }
 
@@ -656,11 +704,16 @@ class YahooApi {
         try {
             const data = JSON.parse(html);
             const result = data?.chart?.result?.[0];
+
             if (!result?.timestamp?.length) {
+                Logger.log(`Yahoo historical: no data. error=${JSON.stringify(data?.chart?.error ?? null)}`);
                 return null;
             }
 
-            const values = result.indicators?.quote?.[0]?.[field];
+            const quoteValues = result.indicators?.quote?.[0]?.[field];
+            const adjCloseValues = result.indicators?.adjclose?.[0]?.adjclose;
+            const values = quoteValues ?? (field === "close" ? adjCloseValues : null);
+
             if (!values) {
                 return null;
             }

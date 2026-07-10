@@ -27,28 +27,36 @@ function main() {
     if (checkOnly) {
         if (isCacheFinanceBundleCurrent()) {
             // skipcq: JS-0002
-            console.log(`dist/CacheFinance.js is up to date (${SOURCE_FILES.length} source files)`);
+            console.log(
+                `dist/CacheFinance.js and dist/CacheFinance.min.js are up to date ` +
+                `(${SOURCE_FILES.length} source files)`
+            );
             return;
         }
 
-        console.error("dist/CacheFinance.js is out of date. Run: npm run build");
+        console.error("dist bundles are out of date. Run: npm run build");
         process.exit(1);
     }
 
     const result = writeCacheFinanceBundle();
+    const distLabel = path.relative(paths.root, paths.dist);
+    const minDistLabel = path.relative(paths.root, paths.distMin);
 
-    if (result.written) {
+    if (result.written || result.minWritten) {
         // skipcq: JS-0002
         console.log(
-            `Built ${paths.dist} (${formatBytes(result.bytes)}, ` +
+            `Built ${distLabel} (${formatBytes(result.bytes)}, ` +
             `${result.sectionCount} files, hash ${result.sourceHash})`
         );
+        // skipcq: JS-0002
+        console.log(`Built ${minDistLabel} (${formatBytes(result.minBytes)})`);
         return;
     }
 
     // skipcq: JS-0002
     console.log(
-        `dist/CacheFinance.js is up to date (${formatBytes(result.bytes)}, hash ${result.sourceHash})`
+        `${distLabel} and ${minDistLabel} are up to date ` +
+        `(${formatBytes(result.bytes)} / ${formatBytes(result.minBytes)}, hash ${result.sourceHash})`
     );
 }
 

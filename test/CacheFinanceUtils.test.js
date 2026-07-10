@@ -93,8 +93,26 @@ describe("CacheFinanceUtils", () => {
 
         const query = CacheFinanceUtils.buildHistoricalQuery(start, end, "WEEKLY");
         expect(query?.interval).toBe("WEEKLY");
+        expect(query?.singleDay).toBe(false);
         expect(CacheFinanceUtils.formatDateForCacheKey(query?.startDate)).toBe("2024-01-01");
         expect(CacheFinanceUtils.formatDateForCacheKey(query?.endDate)).toBe("2024-01-31");
+    });
+
+    it("marks start-date-only queries as single day", () => {
+        const query = CacheFinanceUtils.buildHistoricalQuery(new Date("2024-01-01T00:00:00.000Z"), "", "DAILY");
+        expect(query?.singleDay).toBe(true);
+    });
+
+    it("extracts a single value from a historical series", () => {
+        const target = new Date("2024-01-02T00:00:00.000Z");
+        const series = [
+            [new Date("2024-01-01T00:00:00.000Z"), 100],
+            [target, 101.5]
+        ];
+
+        expect(CacheFinanceUtils.extractHistoricalScalar(series, target)).toBe(101.5);
+        expect(CacheFinanceUtils.formatHistoricalResult(series, { singleDay: true, startDate: target })).toBe(101.5);
+        expect(CacheFinanceUtils.formatHistoricalResult(series, { singleDay: false, startDate: target })).toEqual(series);
     });
 
     it("resolves num_days into an end date", () => {
@@ -119,6 +137,36 @@ describe("CacheFinanceUtils", () => {
 
         expect(CacheFinanceUtils.makeHistoricalCacheKey("nasdaq:aapl", "close", query))
             .toBe("HIST|CLOSE|NASDAQ:AAPL|2024-01-01|2024-01-31|DAILY");
+    });
+
+    it("shifts historical params when cmdOption comma is omitted", () => {
+        const start = new Date("2024-01-01T00:00:00.000Z");
+        const end = new Date("2024-01-31T00:00:00.000Z");
+
+        expect(CacheFinanceUtils.resolveHistoricalParameters(start, end, "DAILY", ""))
+            .toEqual({
+                startDate: start,
+                endDateOrNumDays: end,
+                interval: "DAILY"
+            });
+
+        expect(CacheFinanceUtils.resolveHistoricalParameters(start, "", "", ""))
+            .toEqual({
+                startDate: start,
+                endDateOrNumDays: "",
+                interval: ""
+            });
+    });
+
+    it("builds historical queries from GOOGLEFINANCE series output", () => {
+        const series = [
+            [new Date("2024-01-01T00:00:00.000Z"), 100],
+            [new Date("2024-01-31T00:00:00.000Z"), 110]
+        ];
+
+        const query = CacheFinanceUtils.buildHistoricalQueryFromSeries(series, "DAILY");
+        expect(CacheFinanceUtils.formatDateForCacheKey(query?.startDate)).toBe("2024-01-01");
+        expect(CacheFinanceUtils.formatDateForCacheKey(query?.endDate)).toBe("2024-01-31");
     });
 
     it("validates and revives historical series values", () => {

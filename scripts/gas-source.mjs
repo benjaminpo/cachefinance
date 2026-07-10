@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import esbuild from "esbuild";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,7 +23,8 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 export const paths = Object.freeze({
     root: rootDir,
     src: path.join(rootDir, "src"),
-    dist: path.join(rootDir, "dist", "CacheFinance.js")
+    dist: path.join(rootDir, "dist", "CacheFinance.js"),
+    distMin: path.join(rootDir, "dist", "CacheFinance.min.js")
 });
 
 /**
@@ -91,6 +93,27 @@ export function createBundleBanner(sourceHash) {
 }
 
 /**
+ * @param {string} sourceHash
+ * @returns {string}
+ */
+export function createMinBundleBanner(sourceHash) {
+    return `/* CacheFinance Apps Script bundle (minified). Generated from src/. Source hash: ${sourceHash} */\n`;
+}
+
+/**
+ * @param {string} bundle
+ * @returns {string}
+ */
+export function minifyBundle(bundle) {
+    const { code } = esbuild.transformSync(bundle, {
+        minify: true,
+        legalComments: "none"
+    });
+
+    return code;
+}
+
+/**
  * @param {string} content
  */
 export function validateBundleContent(content) {
@@ -152,31 +175,81 @@ export function buildCacheFinanceBundle() {
 }
 
 /**
+ * @param {string} bundle
+ * @param {string} sourceHash
+ * @returns {string}
+ */
+export function buildCacheFinanceMinBundle(bundle, sourceHash) {
+    const minBundle = `${createMinBundleBanner(sourceHash)}${minifyBundle(bundle)}`;
+
+    validateBundleContent(minBundle);
+
+    return minBundle;
+}
+
+/**
  * @returns {{ written: boolean, bundle: string, sourceHash: string, bytes: number }}
+ */
+/**
+ * @param {string} filePath
+ * @param {string} content
+ * @returns {{ written: boolean, bytes: number }}
+ */
+function writeBundleFile(filePath, content) {
+    const bytes = Buffer.byteLength(content, "utf8");
+    const previous = fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : null;
+
+    if (previous === content) {
+        return { written: false, bytes };
+    }
+
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, content, "utf8");
+
+    return { written: true, bytes };
+}
+
+/**
+ * @returns {{
+ *   written: boolean,
+ *   minWritten: boolean,
+ *   bundle: string,
+ *   minBundle: string,
+ *   sourceHash: string,
+ *   bytes: number,
+ *   minBytes: number,
+ *   sectionCount: number
+ * }}
  */
 export function writeCacheFinanceBundle() {
     const { bundle, sourceHash, sectionCount } = buildCacheFinanceBundle();
-    const bytes = Buffer.byteLength(bundle, "utf8");
-    const previous = fs.existsSync(paths.dist) ? fs.readFileSync(paths.dist, "utf8") : null;
+    const minBundle = buildCacheFinanceMinBundle(bundle, sourceHash);
+    const distResult = writeBundleFile(paths.dist, bundle);
+    const minResult = writeBundleFile(paths.distMin, minBundle);
 
-    if (previous === bundle) {
-        return { written: false, bundle, sourceHash, bytes, sectionCount };
-    }
-
-    fs.mkdirSync(path.dirname(paths.dist), { recursive: true });
-    fs.writeFileSync(paths.dist, bundle, "utf8");
-
-    return { written: true, bundle, sourceHash, bytes, sectionCount };
+    return {
+        written: distResult.written,
+        minWritten: minResult.written,
+        bundle,
+        minBundle,
+        sourceHash,
+        bytes: distResult.bytes,
+        minBytes: minResult.bytes,
+        sectionCount
+    };
 }
 
 /**
  * @returns {boolean}
  */
 export function isCacheFinanceBundleCurrent() {
-    if (!fs.existsSync(paths.dist)) {
+    if (!fs.existsSync(paths.dist) || !fs.existsSync(paths.distMin)) {
         return false;
     }
 
-    const { bundle } = buildCacheFinanceBundle();
-    return fs.readFileSync(paths.dist, "utf8") === bundle;
+    const { bundle, sourceHash } = buildCacheFinanceBundle();
+    const minBundle = buildCacheFinanceMinBundle(bundle, sourceHash);
+
+    return fs.readFileSync(paths.dist, "utf8") === bundle
+        && fs.readFileSync(paths.distMin, "utf8") === minBundle;
 }

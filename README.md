@@ -21,11 +21,13 @@
 * **CACHEFINANCE** is a custom function to supplement GOOGLEFINANCE.
   * Use this for ONE symbol and ONE attribute lookup.
   * Supports GOOGLEFINANCE-style **historical** queries (`start_date`, `end_date` / `num_days`, `interval`) since v1.2.0.
+  * **Single-date** historical queries return one value; **date-range** queries return a table.
 * **CACHEFINANCES** is a custom function similar to **CACHEFINANCE** except it is used to process a range of symbols.
 * Valid **STOCK** data is always available even when GOOGLEFINANCE refuses to work.
 * **Warning!!!** When a stock/ETF switches to a new exchange and you do not update the exchange code, CACHEFINANCE will continue to report the LAST quote it was able to obtain for a very long period of time.  This of course leads to portfolio valuations to drift from actual as time goes by.  You therefore need to periodically manually inspect the CACHEFINANCE price versus a quote you would have with your broker.
 * GOOGLEFINANCE does not support all stock symbols.  Many unsupported google stocks can still get price/name/yield data (using web screen scraping).
 * GOOGLEFINANCE does not support all currency conversions.  CACHEFINANCE will lookup any failing currency conversions if GOOGLEFINANCE fails (strangely, I am pulling this data from the google finance web site - which works most of the time)
+* **Historical currency** pairs (`CURRENCY:USDEUR`, `CURRENCY:CADEUR`, etc.) are supported since v1.2.0 when `GOOGLEFINANCE` historical data fails — Yahoo forex chart data is used as fallback.
 * As you can guess from the name, data is cached so when '#N/A' appears, it uses the last known value so that it does not mess up your asset history logging/graphing.
 * [All My Google Sheets Work](https://demmings.github.io/index.html)
 * [CacheFinance Web site](https://demmings.github.io/notes/cachefinance.html)
@@ -139,13 +141,55 @@
 
 ## Historical data (CACHEFINANCE)
 
-When `startDate` is provided, **CACHEFINANCE** runs in historical mode and returns a 2D table (date + value), matching [GOOGLEFINANCE historical syntax](https://support.google.com/docs/answer/3093281).
+Since **v1.2.0**, **CACHEFINANCE** supports [GOOGLEFINANCE historical syntax](https://support.google.com/docs/answer/3093281).
 
-* **startDate** - Start date for the historical range. Required to enable historical mode.
-* **endDateOrNumDays** - End date, **or** the number of days from `startDate` for which to return data. If omitted, only the single `startDate` day is returned.
-* **interval** - `"DAILY"` or `"WEEKLY"` (also `1` or `7`). Defaults to `"DAILY"`.
+Full signature:
 
-Historical parameters are appended **after** `cmdOption`, so existing formulas and backdoor commands are unchanged. Leave `cmdOption` empty when you are not setting a provider:
+```text
+CACHEFINANCE(symbol, attribute, defaultValue, cmdOption, startDate, endDateOrNumDays, interval)
+```
+
+| Parameter | Purpose |
+|---|---|
+| `startDate` | Start date. Providing this enables historical mode. |
+| `endDateOrNumDays` | End date **or** number of days from `startDate`. **If omitted, only the `startDate` value is returned as a single number** (not a table). |
+| `interval` | `"DAILY"` or `"WEEKLY"` (also `1` or `7`). Defaults to `"DAILY"`. Only applies when a date range is requested. |
+
+Historical parameters are appended **after** `cmdOption`. Existing formulas and backdoor commands are unchanged.
+
+### Return type: one value vs. a table
+
+| What you pass | What you get |
+|---|---|
+| `startDate` only | **One number** in one cell (matches `GOOGLEFINANCE`) |
+| `startDate` + `endDate` or `num_days` | **2-column table** (date + value) that spills down |
+
+If you only need an exchange rate on a specific date, pass **just the start date** — you will not get a spilled table or `#REF!` errors from blocked cells.
+
+### Single date (one value) — recommended for currency
+
+Matching `GOOGLEFINANCE`, **only `startDate`** returns a **single number**:
+
+```text
+=CACHEFINANCE("CURRENCY:CADEUR", "price", "#N/A", DATE(2024,6,1))
+```
+
+With `GOOGLEFINANCE` as the default value:
+
+```text
+=CACHEFINANCE(
+  "CURRENCY:CADEUR",
+  "price",
+  GOOGLEFINANCE("CURRENCY:CADEUR", "price", DATE(2024,6,1)),
+  DATE(2024,6,1)
+)
+```
+
+The date in parameter 4 is recognized as `startDate` even when the empty `cmdOption` comma is omitted.
+
+### Date range (table)
+
+Use a range when you need a history chart or multiple rows. With explicit dates (note the empty `cmdOption` comma):
 
 ```text
 =CACHEFINANCE(
@@ -159,28 +203,101 @@ Historical parameters are appended **after** `cmdOption`, so existing formulas a
 )
 ```
 
-Weekly closes over 14 days from a start date:
+Weekly closes over 14 days:
 
 ```text
 =CACHEFINANCE("NYSE:GE", "close", "#N/A", , DATE(2023,12,31), 14, "WEEKLY")
 ```
 
-**Behavior**
+**Simpler form** — pass only the `GOOGLEFINANCE` historical result as `defaultValue`; dates are inferred from the series:
 
-1. If `defaultValue` is a valid historical series from `GOOGLEFINANCE()`, it is cached and returned.
-2. If `GOOGLEFINANCE()` fails (`#N/A`), the function checks the cache.
-3. If still missing, it fetches historical data from the Yahoo Chart API where supported.
-4. As a last resort, it returns the long-cache copy of the series.
+```text
+=CACHEFINANCE(
+  "NASDAQ:AAPL",
+  "close",
+  GOOGLEFINANCE("NASDAQ:AAPL","close",DATE(2024,1,1),DATE(2024,12,31),"DAILY")
+)
+```
 
-**Supported historical attributes** (third-party fallback): `close`, `price`, `open`, `priceopen`, `high`, `low`, `volume`.
+If you omit the `cmdOption` comma, dates in positions 4–6 are still recognized automatically:
+
+```text
+=CACHEFINANCE("NASDAQ:AAPL", "close", "#N/A", DATE(2024,1,1), DATE(2024,12,31), "DAILY")
+```
+
+### Currency date-range example
+
+Use `"price"` or `"close"` as the attribute:
+
+```text
+=CACHEFINANCE(
+  "CURRENCY:CADEUR",
+  "price",
+  GOOGLEFINANCE("CURRENCY:CADEUR","price",DATE(2024,1,1),DATE(2024,12,31),"DAILY")
+)
+```
+
+Currency fallback uses Yahoo forex tickers (e.g. `CURRENCY:USDEUR` → `USDEUR=X`, `CURRENCY:CADEUR` → `CADEUR=X`).
+
+### Behavior
+
+1. If `defaultValue` is a valid value or series from `GOOGLEFINANCE()`, it is cached and returned.
+2. If `GOOGLEFINANCE()` fails (`#N/A`), the function checks the short-term cache.
+3. If still missing, it fetches from the Yahoo Chart API (stocks and currency pairs).
+4. As a last resort, it returns the long-cache copy, or `#N/A`.
+5. **Single-date** queries always return one number; **range** queries return a table.
+
+**Supported historical attributes** (Yahoo fallback): `close`, `price`, `open`, `priceopen`, `high`, `low`, `volume`.
 
 **Limitations**
 
-* Historical mode is supported in **CACHEFINANCE** only (not **CACHEFINANCES** bulk lookups yet).
-* Currency (`CURRENCY:`) historical lookups are not supported by the Yahoo fallback.
+* Historical mode is **CACHEFINANCE** only (not **CACHEFINANCES** bulk lookups yet).
 * Large date ranges can be slow and may approach the 30-second custom-function limit.
+* If you see stale `#N/A` results after upgrading, run `=CACHEFINANCE("", "", "CLEARCACHE")` once to clear old cache entries.
+
+### `#REF!` — array result was not expanded
+
+This error applies **only to date-range** formulas (when `endDateOrNumDays` is provided). Single-date formulas return one value and do not spill.
+
+Date-range `CACHEFINANCE` returns a **2-column table** (date in column 1, value in column 2), just like `GOOGLEFINANCE` historical. Google Sheets **spills** that result into the cells below and to the right of the formula cell.
+
+If any cell in the spill area already contains data, Sheets shows:
+
+```text
+#REF!  Array result was not expanded because it would overwrite data in K2.
+```
+
+**Fix**
+
+1. Pick a formula cell with **empty space to the right and below** (at least **2 columns** wide and as many rows as your date range).
+2. Clear or move whatever is in **K2** (and any other cells in the spill range).
+3. Re-enter the formula.
+
+**Example layout** — formula in `J2`, keep `J2:K500` clear:
+
+```text
+     J              K
+2    =CACHEFINANCE(...)    ← dates spill in J, values spill in K
+3    (auto)         (auto)
+4    (auto)         (auto)
+```
+
+Do **not** place other labels, totals, or formulas in column K on the same rows as the historical table.
+
+**Avoid the spill entirely** — if you only need one rate on one date, omit `endDateOrNumDays`:
+
+```text
+=CACHEFINANCE("CURRENCY:CADEUR", "price", "#N/A", DATE(2024,6,1))
+```
+
+For a **current** price (today, no date), omit all historical parameters:
+
+```text
+=CACHEFINANCE("CURRENCY:CADEUR", "price", GOOGLEFINANCE("CURRENCY:CADEUR"))
+```
 
 ## CACHEFINANCES
+
 * **WHY USE?**
   * If you have many individual lookups using CACHEFINANCE() for price, name, yieldpct and each CACHEFINANCE() execution has to make several time consuming API calls to SHEETS, it is less efficient than using CACHEFINANCES() which uses the absolute minimum of API calls.
   * Stock prices for symbols that never get a default value (like many Canadian stocks such as TSE:ZTL), the CACHEFINANCE() function might only be executed infrequently since none of the parameter data chages - which does force the custom function to run.  Now these stocks will be updated regularly since any other stock price which IS updated in the default range, will trigger the function to run.  After the cache seconds has expired, it will use the third party website data to update the value.
@@ -241,6 +358,7 @@ This repository includes a Node.js toolchain for building, testing, and validati
 | --- | --- |
 | `src/` | Source modules edited during development |
 | `dist/CacheFinance.js` | Single-file Apps Script bundle (generated) |
+| `dist/CacheFinance.min.js` | Minified Apps Script bundle (generated) |
 | `scripts/` | Build utilities (`gas-source.mjs`, `build-cachefinance.mjs`) |
 | `test/` | Vitest unit tests |
 | `src/GasMocks.js` | Google Apps Script service mocks (tests only) |
@@ -261,7 +379,7 @@ npm ci
 
 ## Build
 
-Generate or refresh `dist/CacheFinance.js` from `src/`:
+Generate or refresh `dist/CacheFinance.js` and `dist/CacheFinance.min.js` from `src/`:
 
 ```bash
 npm run build
@@ -273,7 +391,7 @@ Verify the committed bundle is up to date (used in CI):
 npm run build:check
 ```
 
-The build only rewrites `dist/CacheFinance.js` when the output changes. The bundle header includes a source hash so unchanged sources produce an identical file.
+The build only rewrites `dist/CacheFinance.js` and `dist/CacheFinance.min.js` when the output changes. The bundle header includes a source hash so unchanged sources produce identical files.
 
 ## Test
 
@@ -289,7 +407,7 @@ Coverage reports are written to `coverage/` (HTML report: `coverage/index.html`)
 ## Contributing changes
 
 1. Edit files in `src/`.
-2. Run `npm run build` to regenerate `dist/CacheFinance.js`.
+2. Run `npm run build` to regenerate `dist/CacheFinance.js` and `dist/CacheFinance.min.js`.
 3. Run `npm run validate` before opening a pull request.
 4. Commit both `src/` and `dist/` changes.
 
